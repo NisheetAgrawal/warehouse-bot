@@ -281,6 +281,11 @@ async def error_handler(update, context):
 
 # ── Entry point ──────────────────────────────────────────────────
 def main():
+    import asyncio
+    # Python 3.10+ no longer auto-creates an event loop — set one explicitly
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     start_health_server()
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
