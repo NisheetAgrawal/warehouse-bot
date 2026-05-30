@@ -8,6 +8,7 @@ INTENT TYPES:
 - add_stock: goods arrived, increase quantity
 - ship_out: truck loading out, decrease quantity, generate receipt
 - add_product: new product to be added
+- update_rate: user wants to set/update the price/rate of a product
 - unknown: cannot understand
 
 BRAND ALIASES (normalize to standard spelling):
@@ -44,6 +45,12 @@ ship_out:
 
 add_product:
 {"intent":"add_product","items":[{"category":"Solar Panel","brand":"Waaree","spec":"650","type":"DCR"}]}
+
+update_rate:
+{"intent":"update_rate","items":[{"brand":"Waaree","spec":"605","type":"DCR","rate":420000}]}
+
+Rate parsing: "420 krdo per unit", "rate 420k", "rate 4.2 lakh", "420000" → 420000 (always in rupees as integer)
+"1.5 lakh" → 150000, "2.2 lakh" → 220000, "50k" → 50000, "50 hajar" → 50000
 
 unknown:
 {"intent":"unknown","message":"Could not understand"}

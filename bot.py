@@ -29,7 +29,7 @@ def start_health_server():
 
 from config import TELEGRAM_TOKEN
 from groq_parser import parse_message
-from sheets import get_stock, add_stock, deduct_stock, add_new_product
+from sheets import get_stock, add_stock, deduct_stock, add_new_product, update_rate
 from pdf_generator import generate_delivery_receipt
 
 logging.basicConfig(
@@ -75,6 +75,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif intent == "add_product":
         await _handle_add_product(update, parsed, sender)
+
+    elif intent == "update_rate":
+        await _handle_update_rate(update, parsed)
 
     else:
         await update.message.reply_text(
@@ -268,6 +271,37 @@ async def _handle_add_product(update, parsed, sender):
             lines.append(f"❌ {result.get('error', 'Error')}")
 
     await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
+
+
+# ── Update rate ──────────────────────────────────────────────────
+async def _handle_update_rate(update, parsed):
+    items = parsed.get("items", [])
+    if not items:
+        await update.message.reply_text("Kaunsa product aur kitna rate? Dobara bhejo.")
+        return
+
+    lines = []
+    for item in items:
+        rate = item.get("rate", 0)
+        if not rate or int(rate) <= 0:
+            lines.append(f"❌ Rate missing: {item['brand']} {item['spec']}")
+            continue
+        result = update_rate(
+            item["brand"], item["spec"], item.get("type", "DCR"), int(rate)
+        )
+        if result["success"]:
+            lines.append(
+                f"✅ *{result['brand']} {result['spec']} {result['type']}*\n"
+                f"Rate: *₹{int(rate):,}* per unit\n"
+                f"Total ({result['quantity']} units): *₹{result['quantity'] * int(rate):,}*"
+            )
+        else:
+            lines.append(f"❌ {result['error']}")
+
+    await update.message.reply_text(
+        "💰 *Rate Updated:*\n\n" + "\n\n".join(lines),
+        parse_mode="Markdown"
+    )
 
 
 # ── Error handler ────────────────────────────────────────────────

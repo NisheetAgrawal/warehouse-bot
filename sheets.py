@@ -167,9 +167,34 @@ def get_stock(brand: str, spec: str, type_: str) -> dict:
 
 
 def update_quantity(row_idx: int, new_qty: int):
-    """Update Quantity (col 5) for a row. Col 7 = Total updated if rate exists."""
     ws = _get_sheet("Stock")
     ws.update_cell(row_idx, 5, new_qty)
+    # Recalculate Total = Qty × Rate in col G (7)
+    row = ws.row_values(row_idx)
+    rate_raw = row[5].strip() if len(row) > 5 else ""
+    try:
+        rate = float(str(rate_raw).replace(",", "").replace("₹", "").strip() or 0)
+        if rate > 0:
+            ws.update_cell(row_idx, 7, int(new_qty * rate))
+    except Exception:
+        pass
+
+
+def update_rate(brand: str, spec: str, type_: str, rate: int) -> dict:
+    info = get_stock(brand, spec, type_)
+    if not info["found"]:
+        return {"success": False, "error": f"Nahi mila: {brand} {spec} {type_}"}
+
+    ws = _get_sheet("Stock")
+    row_idx = info["row_idx"]
+    qty = info["quantity"]
+    ws.update_cell(row_idx, 6, rate)                         # col F = Rate
+    ws.update_cell(row_idx, 7, qty * rate if qty else 0)     # col G = Total
+    return {
+        "success": True,
+        "brand": info["brand"], "spec": info["spec"], "type": info["type"],
+        "rate": rate, "quantity": qty
+    }
 
 
 def add_stock(brand: str, spec: str, type_: str, quantity: int, operator: str) -> dict:
