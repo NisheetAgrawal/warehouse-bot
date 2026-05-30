@@ -1,5 +1,8 @@
 import logging
 import io
+import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 from telegram import Update
 from telegram.ext import (
@@ -8,6 +11,21 @@ from telegram.ext import (
 )
 from dotenv import load_dotenv
 load_dotenv()
+
+# Render requires a port to be open — run a minimal health server
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Warehouse bot is running")
+    def log_message(self, *args):
+        pass  # silence access logs
+
+def start_health_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    logging.getLogger(__name__).info(f"Health server on port {port}")
 
 from config import TELEGRAM_TOKEN
 from groq_parser import parse_message
@@ -263,6 +281,7 @@ async def error_handler(update, context):
 
 # ── Entry point ──────────────────────────────────────────────────
 def main():
+    start_health_server()
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
