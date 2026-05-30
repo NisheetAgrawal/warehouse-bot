@@ -4,7 +4,7 @@ from reportlab.lib.units import mm
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import io
 
 BRAND_COLOR = colors.HexColor("#1F4E79")
@@ -12,10 +12,12 @@ LIGHT_BLUE  = colors.HexColor("#EBF4FF")
 ALT_ROW     = colors.HexColor("#F7FBFF")
 RED_COLOR   = colors.HexColor("#CC0000")
 
+IST = timezone(timedelta(hours=5, minutes=30))
+
 
 def generate_delivery_receipt(vehicle_no: str, operator: str, items: list) -> bytes:
     """
-    items: list of dicts — brand, spec, type, quantity, rate
+    items: list of dicts — brand, spec, type, quantity
     Returns PDF bytes.
     """
     buffer = io.BytesIO()
@@ -26,9 +28,9 @@ def generate_delivery_receipt(vehicle_no: str, operator: str, items: list) -> by
     )
 
     story = []
-    now = datetime.now()
+    now = datetime.now(IST)
     date_str = now.strftime("%d %b %Y")
-    time_str = now.strftime("%I:%M %p")
+    time_str = now.strftime("%I:%M %p") + " IST"
 
     # ── Header ──────────────────────────────────────────────────
     h_company = ParagraphStyle("hc", fontSize=18, textColor=BRAND_COLOR, fontName="Helvetica-Bold")
@@ -38,7 +40,7 @@ def generate_delivery_receipt(vehicle_no: str, operator: str, items: list) -> by
 
     header_data = [
         [Paragraph("SOLAR WAREHOUSE", h_company),
-         Paragraph("DELIVERY RECEIPT", h_title)],
+         Paragraph("DELIVERY CHALLAN", h_title)],
         [Paragraph("Inventory Management System", h_sub),
          Paragraph(f"{date_str} &middot; {time_str}", h_date)]
     ]
@@ -75,39 +77,26 @@ def generate_delivery_receipt(vehicle_no: str, operator: str, items: list) -> by
     story.append(meta_table)
     story.append(Spacer(1, 8*mm))
 
-    # ── Items table ──────────────────────────────────────────────
-    col_headers = ["#", "Brand", "Specification", "Qty", "Rate (Rs.)", "Amount (Rs.)"]
+    # ── Items table (no rate/amount) ─────────────────────────────
+    col_headers = ["#", "Brand", "Specification", "Quantity"]
     table_data  = [col_headers]
 
-    total_qty    = 0
-    total_amount = 0.0
+    total_qty = 0
 
     for i, item in enumerate(items):
-        try:
-            rate = float(
-                str(item.get("rate", "0"))
-                .replace(",", "").replace("Rs.", "").replace("₹", "").strip() or 0
-            )
-        except (ValueError, AttributeError):
-            rate = 0.0
-        qty    = int(item.get("quantity", 0))
-        amount = rate * qty
-        total_qty    += qty
-        total_amount += amount
-
+        qty = int(item.get("quantity", 0))
+        total_qty += qty
         table_data.append([
             str(i + 1),
             item.get("brand", ""),
             f"{item.get('spec', '')} {item.get('type', '')}".strip(),
             str(qty),
-            f"Rs.{rate:,.0f}" if rate else "N/A",
-            f"Rs.{amount:,.0f}" if rate else "N/A"
         ])
 
     # Total row
-    table_data.append(["", "", "TOTAL", str(total_qty), "", f"Rs.{total_amount:,.0f}"])
+    table_data.append(["", "", "TOTAL", str(total_qty)])
 
-    col_widths  = [12*mm, 35*mm, 55*mm, 18*mm, 27*mm, 30*mm]
+    col_widths  = [15*mm, 50*mm, 90*mm, 26*mm]
     items_table = Table(table_data, colWidths=col_widths, repeatRows=1)
 
     row_styles = [
@@ -117,7 +106,6 @@ def generate_delivery_receipt(vehicle_no: str, operator: str, items: list) -> by
         ("FONTSIZE",      (0,0),  (-1,0),  9),
         ("ALIGN",         (0,0),  (-1,-1), "CENTER"),
         ("ALIGN",         (1,1),  (2,-1),  "LEFT"),
-        ("ALIGN",         (4,1),  (5,-1),  "RIGHT"),
         ("FONTSIZE",      (0,1),  (-1,-2), 9),
         ("GRID",          (0,0),  (-1,-1), 0.3, colors.HexColor("#CCCCCC")),
         ("TOPPADDING",    (0,0),  (-1,-1), 6),
