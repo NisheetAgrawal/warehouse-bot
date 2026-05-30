@@ -38,18 +38,23 @@ def _get_sheet(sheet_name="Stock"):
         return None
 
 
+TRANSACTION_HEADERS = [
+    "Timestamp", "Type", "Brand", "Spec",
+    "Qty Change", "Stock Before", "Stock After",
+    "Vehicle No", "Operator"
+]
+
 def _get_or_create_transactions_sheet():
     from config import GOOGLE_SHEET_ID
     spreadsheet = _client().open_by_key(GOOGLE_SHEET_ID)
     try:
-        return spreadsheet.worksheet("Transacation")
+        ws = spreadsheet.worksheet("Transacation")
+        if ws.row_values(1) != TRANSACTION_HEADERS:
+            ws.update("A1", [TRANSACTION_HEADERS])
+        return ws
     except gspread.WorksheetNotFound:
-        ws = spreadsheet.add_worksheet(title="Transacation", rows=1000, cols=10)
-        ws.append_row([
-            "Timestamp", "Type", "Category", "Brand", "Spec",
-            "Qty Change", "Stock Before", "Stock After",
-            "Vehicle No", "Operator"
-        ])
+        ws = spreadsheet.add_worksheet(title="Transacation", rows=1000, cols=9)
+        ws.append_row(TRANSACTION_HEADERS)
         return ws
 
 
@@ -251,9 +256,11 @@ def _log_transaction(type_, brand, spec, qty_change, before, after, vehicle_no, 
     """Silently log to TRANSACTIONS sheet. Never crashes main flow."""
     try:
         ws = _get_or_create_transactions_sheet()
+        from datetime import timezone, timedelta
+        IST = timezone(timedelta(hours=5, minutes=30))
         ws.append_row([
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            type_, "", brand, spec,
+            datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST"),
+            type_, brand, spec,
             qty_change, before, after,
             vehicle_no, operator
         ])
