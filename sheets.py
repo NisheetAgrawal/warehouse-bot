@@ -12,7 +12,7 @@ SCOPES = [
 
 # Rows where Brand column contains these strings are category headers — skip them
 HEADER_KEYWORDS = {
-    "solar panel", "inverter", "acdb/dcdb", "acdb", "dcdb", "cable", "cables",
+    "solar panel", "inverter", "acdb/dcdb", "cable", "cables",
     "brand", "sr.no", "sr no", "category", "watt", "kw", "product"
 }
 
