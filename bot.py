@@ -142,18 +142,19 @@ async def _handle_add_stock(update, parsed, sender, context):
         if not qty or int(qty) <= 0:
             lines.append(f"❌ Quantity missing: {item['brand']} {item['spec']}")
             continue
-        result = add_stock(
-            item["brand"], item["spec"], item.get("type", "DCR"),
-            int(qty), sender, party
-        )
+        info = get_stock(item["brand"], item["spec"], item.get("type", "DCR"))
+        if not info["found"]:
+            # Store pending add and ask for suggestions — don't update anything yet
+            context.chat_data["pending_add"] = {"item": item, "qty": int(qty), "sender": sender, "party": party}
+            await _suggest_products(update, context, item,
+                {"intent": "add_stock_pending", "sender": sender, "party": party, "quantity": int(qty)})
+            continue
+        result = add_stock(info["brand"], info["spec"], info["type"], int(qty), sender, party)
         if result["success"]:
             lines.append(
                 f"✅ *{result['brand']} {result['spec']} {result['type']}*\n"
                 f"{result['before']} → *{result['after']}* (+{result['quantity']})"
             )
-        elif "Nahi mila" in result.get("error", ""):
-            await _suggest_products(update, context, item,
-                {"intent": "add_stock", "sender": sender, "party": party, **item})
         else:
             lines.append(f"❌ {result['error']}")
 
@@ -174,91 +175,90 @@ async def _handle_ship_out(update, context, parsed, sender, chat_id):
         await update.message.reply_text("Kaunsa maal ja raha hai? Dobara bhejo.")
         return
 
-    await update.message.reply_text(
-        f"🚛 Processing shipment for vehicle *{vehicle_no}*...",
-        parse_mode="Markdown"
-    )
-    await context.bot.send_chat_action(chat_id=chat_id, action="upload_document")
+    # ── Step 1: Verify ALL products exist BEFORE deducting anything ──
+    resolved_items = []   # items with confirmed brand/spec/type
+    for item in items:
+        if not item.get("quantity") or int(item.get("quantity", 0)) <= 0:
+            await update.message.reply_text(
+                f"❌ Quantity missing for *{item['brand']} {item.get('spec','')}*. Dobara bhejo.",
+                parse_mode="Markdown"
+            )
+            return
+        info = get_stock(item["brand"], item["spec"], item.get("type", "DCR"))
+        if not info["found"]:
+            # Product not found — ask user to pick; hold entire shipment
+            context.chat_data["pending_shipment"] = {
+                "all_items":  items,
+                "vehicle_no": vehicle_no,
+                "party":      party,
+                "sender":     sender,
+                "chat_id":    chat_id,
+                "unresolved_brand": item["brand"],
+                "unresolved_spec":  item.get("spec", ""),
+            }
+            await _suggest_products(update, context, item, {"intent": "ship_out_pending"})
+            return
+        # Normalize to exact sheet values
+        resolved_items.append({
+            "brand":    info["brand"],
+            "spec":     info["spec"],
+            "type":     info["type"],
+            "quantity": int(item["quantity"])
+        })
+
+    # ── Step 2: All confirmed — now deduct and generate challan ──
+    await _execute_ship_out(update, context, resolved_items, vehicle_no, party, sender, chat_id)
+
+
+async def _execute_ship_out(update_or_query, context, items, vehicle_no, party, sender, chat_id):
+    """Deduct stock and generate challan. Called after all products are confirmed."""
+    is_callback = not hasattr(update_or_query, "message")
+    reply = (update_or_query.message if not is_callback else update_or_query).reply_text
 
     results = []
     errors  = []
-
     for item in items:
-        qty = item.get("quantity", 0)
-        if not qty or int(qty) <= 0:
-            errors.append(f"Quantity missing for {item['brand']} {item['spec']}")
-            continue
         result = deduct_stock(
-            item["brand"], item["spec"], item.get("type", "DCR"),
-            int(qty), vehicle_no, sender, party
+            item["brand"], item["spec"], item["type"],
+            item["quantity"], vehicle_no, sender, party
         )
         if result["success"]:
             results.append(result)
-        elif "Nahi mila" in result.get("error", ""):
-            await _suggest_products(update, context, item,
-                {"intent": "ship_out", "sender": sender, "party": party,
-                 "vehicle_no": vehicle_no, **item})
         else:
             errors.append(result.get("error", "Unknown error"))
 
-    if not results and errors:
-        await update.message.reply_text(
-            "❌ *Shipment fail ho gaya:*\n\n" + "\n".join(errors),
-            parse_mode="Markdown"
-        )
+    if not results:
+        await context.bot.send_message(chat_id=chat_id,
+            text="❌ *Shipment fail:*\n" + "\n".join(errors), parse_mode="Markdown")
         return
-
-    pdf_items = [
-        {"brand": r["brand"], "spec": r["spec"], "type": r["type"], "quantity": r["quantity"]}
-        for r in results
-    ]
 
     from datetime import timezone, timedelta
     IST = timezone(timedelta(hours=5, minutes=30))
+    pdf_items = [{"brand": r["brand"], "spec": r["spec"], "type": r["type"], "quantity": r["quantity"]} for r in results]
     pdf_bytes = generate_delivery_receipt(vehicle_no, sender, pdf_items, party)
     pdf_io    = io.BytesIO(pdf_bytes)
     pdf_name  = f"challan_{vehicle_no}_{datetime.now(IST).strftime('%d%b%Y_%H%M')}.pdf"
 
     total_qty = sum(r["quantity"] for r in results)
-
-    summary_lines = [
-        f"✅ *{r['brand']} {r['spec']} {r['type']}*: -{r['quantity']} units"
-        for r in results
-    ]
+    summary_lines = [f"✅ *{r['brand']} {r['spec']} {r['type']}*: -{r['quantity']} units" for r in results]
     if errors:
-        summary_lines.append("\n⚠️ *Skipped:*")
-        summary_lines.extend([f"• {e}" for e in errors])
+        summary_lines += ["\n⚠️ *Skipped:*"] + [f"• {e}" for e in errors]
 
     party_line = f"\n🏪 Party: *{party}*" if party else ""
     caption = (
-        f"🚛 *Delivery Challan*\n"
-        f"Vehicle: *{vehicle_no}*{party_line}\n"
-        f"Total: *{total_qty} units*\n\n"
+        f"🚛 *Delivery Challan*\nVehicle: *{vehicle_no}*{party_line}\nTotal: *{total_qty} units*\n\n"
         + "\n".join(summary_lines)
     )
 
-    # Store last shipment for edit functionality
     context.chat_data["last_shipment"] = {
-        "vehicle_no": vehicle_no,
-        "sender": sender,
-        "party": party,
-        "items": [
-            {"brand": r["brand"], "spec": r["spec"], "type": r["type"], "quantity": r["quantity"]}
-            for r in results
-        ]
+        "vehicle_no": vehicle_no, "sender": sender, "party": party,
+        "items": [{"brand": r["brand"], "spec": r["spec"], "type": r["type"], "quantity": r["quantity"]} for r in results]
     }
 
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✏️ Edit Challan", callback_data="edit_challan")
-    ]])
-
     await context.bot.send_document(
-        chat_id=chat_id,
-        document=pdf_io,
-        filename=pdf_name,
-        caption=caption,
-        parse_mode="Markdown",
-        reply_markup=keyboard
+        chat_id=chat_id, document=pdf_io, filename=pdf_name,
+        caption=caption, parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Edit Challan", callback_data="edit_challan")]])
     )
 
 
@@ -362,6 +362,58 @@ async def product_pick_callback(update, context):
     sender   = action_ctx.get("sender", "Unknown")
     party    = action_ctx.get("party", "")
     chat_id  = query.message.chat_id
+
+    # ── Add stock pending: confirmed product → now add ──
+    if intent == "add_stock_pending":
+        pending = context.chat_data.pop("pending_add", {})
+        qty    = pending.get("qty", int(action_ctx.get("quantity", 0)))
+        sender = pending.get("sender", sender)
+        party  = pending.get("party", party)
+        result = add_stock(chosen["brand"], chosen["spec"], chosen["type"], qty, sender, party)
+        if result["success"]:
+            party_line = f"\n🏪 Supplier: *{party}*" if party else ""
+            await query.message.reply_text(
+                f"📦 *Stock Updated:*{party_line}\n\n"
+                f"✅ *{result['brand']} {result['spec']} {result['type']}*\n"
+                f"{result['before']} → *{result['after']}* (+{qty})",
+                parse_mode="Markdown"
+            )
+        else:
+            await query.message.reply_text(f"❌ {result['error']}")
+        context.chat_data.pop("pending_action", None)
+        context.chat_data.pop("suggestions", None)
+        return
+
+    # ── Ship out pending: replace unresolved item then execute full shipment ──
+    if intent == "ship_out_pending":
+        pending = context.chat_data.get("pending_shipment", {})
+        all_items   = pending.get("all_items", [])
+        vehicle_no  = pending.get("vehicle_no", "NOT PROVIDED")
+        party       = pending.get("party", "")
+        sender      = pending.get("sender", "Unknown")
+        p_chat_id   = pending.get("chat_id", chat_id)
+        unres_brand = pending.get("unresolved_brand", "")
+        unres_spec  = pending.get("unresolved_spec", "")
+
+        # Replace the unresolved item with chosen product
+        for item in all_items:
+            if (_normalize(item["brand"]) == _normalize(unres_brand) and
+                    _normalize(item.get("spec","")) == _normalize(unres_spec)):
+                item["brand"] = chosen["brand"]
+                item["spec"]  = chosen["spec"]
+                item["type"]  = chosen["type"]
+                break
+
+        context.chat_data.pop("pending_shipment", None)
+        context.chat_data.pop("pending_action", None)
+        context.chat_data.pop("suggestions", None)
+
+        await query.message.reply_text(
+            f"✅ *{chosen['brand']} {chosen['spec']} {chosen['type']}* select kiya.\n"
+            f"🚛 Ab challan generate ho raha hai...", parse_mode="Markdown"
+        )
+        await _execute_ship_out(query, context, all_items, vehicle_no, party, sender, p_chat_id)
+        return
 
     if intent == "check_stock":
         info = get_stock(chosen["brand"], chosen["spec"], chosen["type"])
