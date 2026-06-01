@@ -29,7 +29,7 @@ def start_health_server():
 
 from config import TELEGRAM_TOKEN
 from groq_parser import parse_message
-from sheets import get_stock, add_stock, deduct_stock, add_new_product, update_rate, _normalize, search_similar_products, get_all_products_by_brand
+from sheets import get_stock, add_stock, deduct_stock, add_new_product, update_rate, _normalize, search_similar_products, get_all_products_by_brand, get_party_summary
 from pdf_generator import generate_delivery_receipt
 
 logging.basicConfig(
@@ -85,6 +85,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif intent == "update_rate":
         await _handle_update_rate(update, parsed)
+
+    elif intent == "party_history":
+        await _handle_party_history(update, parsed)
 
     else:
         await update.message.reply_text(
@@ -623,6 +626,53 @@ async def _handle_update_rate(update, parsed):
         "💰 *Rate Updated:*\n\n" + "\n\n".join(lines),
         parse_mode="Markdown"
     )
+
+
+# ── Party history ────────────────────────────────────────────────
+async def _handle_party_history(update, parsed):
+    party = parsed.get("party", "").strip()
+    if not party:
+        await update.message.reply_text("Kis party ka hisaab chahiye? Naam bhejo.")
+        return
+
+    await update.message.reply_text(f"🔍 *{party}* ka record dhundh raha hoon...", parse_mode="Markdown")
+    data = get_party_summary(party)
+
+    if data.get("error"):
+        await update.message.reply_text(f"❌ Error: {data['error']}")
+        return
+
+    if not data.get("found"):
+        await update.message.reply_text(
+            f"❌ *{party}* ka koi transaction nahi mila.\n"
+            "Party name exactly waise likhein jaise challan mein likha tha.",
+            parse_mode="Markdown"
+        )
+        return
+
+    lines = [f"📋 *{party} — Transaction Summary*\n"]
+
+    if data["buy_totals"]:
+        lines.append("🟢 *Kharida (Purchases):*")
+        for product, qty in data["buy_totals"].items():
+            lines.append(f"  • {product}: *{qty} units*")
+        lines.append(f"  _Total transactions: {len(data['purchases'])}_\n")
+
+    if data["sell_totals"]:
+        lines.append("🔴 *Becha (Sales):*")
+        for product, qty in data["sell_totals"].items():
+            lines.append(f"  • {product}: *{qty} units*")
+        lines.append(f"  _Total transactions: {len(data['sales'])}_\n")
+
+    # Last 5 transactions
+    all_txns = sorted(data["purchases"] + data["sales"], key=lambda x: x["timestamp"], reverse=True)
+    if all_txns:
+        lines.append("🕐 *Recent transactions:*")
+        for t in all_txns[:5]:
+            label = "➕ Kharida" if t["type"] == "ADD_IN" else "➖ Becha"
+            lines.append(f"  {label} — {t['brand']} {t['spec']} x{t['qty']} ({t['timestamp'][:10]})")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 # ── Error handler ────────────────────────────────────────────────

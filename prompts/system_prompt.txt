@@ -9,6 +9,7 @@ INTENT TYPES:
 - ship_out: truck loading out, decrease quantity, generate receipt
 - add_product: new product to be added
 - update_rate: user wants to set/update the price/rate of a product
+- party_history: user asks about transactions with a specific party/supplier/customer
 - unknown: cannot understand
 
 BRAND ALIASES (normalize to standard spelling):
@@ -54,6 +55,10 @@ Category must be one of: Solar Panel, Inverter, Cable, ACDB/DCDB
 
 update_rate:
 {"intent":"update_rate","items":[{"brand":"Waaree","spec":"605","type":"DCR","rate":420000}]}
+
+party_history:
+{"intent":"party_history","party":"Raj Traders"}
+Use this when user asks: "Raj Traders ko kitna becha", "Shyam se kitna kharida", "XYZ ka hisaab", "XYZ ki history"
 
 Rate parsing: "420 krdo per unit", "rate 420k", "rate 4.2 lakh", "420000" → 420000 (always in rupees as integer)
 "1.5 lakh" → 150000, "2.2 lakh" → 220000, "50k" → 50000, "50 hajar" → 50000

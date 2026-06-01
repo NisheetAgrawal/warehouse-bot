@@ -413,6 +413,70 @@ def add_new_product(category: str, brand: str, spec: str, type_: str, operator: 
     return {"success": True, "brand": brand, "spec": spec, "type": type_, "category": target_cat or category}
 
 
+def get_party_summary(party_name: str) -> dict:
+    """
+    Returns all transactions for a party (fuzzy name match).
+    Summarizes: total purchased (ADD_IN), total sold (SHIP_OUT), product-wise breakdown.
+    """
+    try:
+        ws = _get_or_create_transactions_sheet()
+        rows = ws.get_all_values()
+    except Exception as e:
+        return {"error": str(e)}
+
+    if len(rows) < 2:
+        return {"found": False, "party": party_name}
+
+    headers = rows[0]
+    party_norm = _normalize(party_name)
+
+    purchases = []   # ADD_IN rows matching party
+    sales     = []   # SHIP_OUT rows matching party
+
+    for row in rows[1:]:
+        if len(row) < 10:
+            continue
+        row_party = _normalize(str(row[9]))   # col J = Party
+        if not row_party or party_norm not in row_party and row_party not in party_norm:
+            continue
+        try:
+            qty = int(str(row[4]).replace("-", "").strip() or 0)
+        except ValueError:
+            qty = 0
+        entry = {
+            "timestamp": row[0],
+            "type":      row[1],
+            "brand":     row[2],
+            "spec":      row[3],
+            "qty":       qty,
+            "vehicle":   row[7],
+        }
+        if row[1] == "ADD_IN":
+            purchases.append(entry)
+        elif row[1] == "SHIP_OUT":
+            sales.append(entry)
+
+    if not purchases and not sales:
+        return {"found": False, "party": party_name}
+
+    # Product-wise summary
+    def summarize(txns):
+        totals = {}
+        for t in txns:
+            key = f"{t['brand']} {t['spec']}"
+            totals[key] = totals.get(key, 0) + t["qty"]
+        return totals
+
+    return {
+        "found":     True,
+        "party":     party_name,
+        "purchases": purchases,
+        "sales":     sales,
+        "buy_totals":  summarize(purchases),
+        "sell_totals": summarize(sales),
+    }
+
+
 def _log_transaction(type_, brand, spec, qty_change, before, after, vehicle_no, operator, party=""):
     """Silently log to TRANSACTIONS sheet. Never crashes main flow."""
     try:
