@@ -29,7 +29,7 @@ def start_health_server():
 
 from config import TELEGRAM_TOKEN
 from groq_parser import parse_message
-from sheets import get_stock, add_stock, deduct_stock, add_new_product, update_rate, _normalize, search_similar_products
+from sheets import get_stock, add_stock, deduct_stock, add_new_product, update_rate, _normalize, search_similar_products, get_all_products_by_brand
 from pdf_generator import generate_delivery_receipt
 
 logging.basicConfig(
@@ -300,9 +300,13 @@ async def _suggest_products(update, context, failed_item: dict, action_context: 
     suggestions = search_similar_products(
         failed_item["brand"], failed_item["spec"], failed_item.get("type", "DCR")
     )
+    # If spec-based search gave nothing, show ALL products of that brand
+    if not suggestions:
+        suggestions = get_all_products_by_brand(failed_item["brand"])
+
     if not suggestions:
         await update.message.reply_text(
-            f"❌ *{failed_item['brand']} {failed_item['spec']}* sheet mein nahi mila.\n"
+            f"❌ *{failed_item['brand']}* ka koi bhi product sheet mein nahi mila.\n"
             "Pehle `naya product` se add karo.",
             parse_mode="Markdown"
         )

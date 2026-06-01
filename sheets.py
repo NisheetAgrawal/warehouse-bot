@@ -158,6 +158,27 @@ def find_product_row(brand: str, spec: str, type_: str):
     return None, None
 
 
+def get_all_products_by_brand(brand: str) -> list:
+    """Return all products of a given brand from the sheet."""
+    ws = _get_sheet("Stock")
+    if not ws:
+        return []
+    all_rows = ws.get_all_values()
+    brand_q = _normalize(brand)
+    results = []
+    for i, row in enumerate(all_rows):
+        if not _is_product_row(row):
+            continue
+        row_brand = _normalize(row[1])
+        if brand_q in row_brand or row_brand in brand_q:
+            qty = int(row[4]) if len(row) > 4 and str(row[4]).isdigit() else 0
+            results.append({
+                "brand": row[1].strip(), "spec": row[2].strip(),
+                "type": row[3].strip(), "quantity": qty, "row_idx": i + 1, "score": 10
+            })
+    return results
+
+
 def search_similar_products(brand: str, spec: str, type_: str, top_n: int = 4) -> list:
     """
     Fuzzy search — returns top_n closest products when exact match fails.
