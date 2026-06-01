@@ -32,19 +32,25 @@ For ship_out: extract vehicle_no (set "NOT PROVIDED" if missing)
 For multiple items in one message: put all in items array
 operator field: sender name if mentioned, else null
 
+PARTY PARSING:
+- add_stock party = supplier/seller name (e.g. "Raj Traders se", "from Raj Traders", "Raj Traders wale ne diya")
+- ship_out party = customer/buyer name (e.g. "Shyam Solar ko", "for Ramesh", "buyer: Suresh")
+- If no party mentioned, set party to ""
+
 RESPOND ONLY IN THIS JSON FORMAT — NO OTHER TEXT:
 
 check_stock:
 {"intent":"check_stock","items":[{"brand":"Waaree","spec":"575","type":"DCR"}]}
 
 add_stock:
-{"intent":"add_stock","items":[{"brand":"Waaree","spec":"575","type":"DCR","quantity":50}]}
+{"intent":"add_stock","party":"Raj Traders","items":[{"brand":"Waaree","spec":"575","type":"DCR","quantity":50}]}
 
 ship_out:
-{"intent":"ship_out","vehicle_no":"HR55AB1234","operator":null,"items":[{"brand":"Waaree","spec":"575","type":"DCR","quantity":20},{"brand":"Polycab","spec":"5kw","type":"3P","quantity":5}]}
+{"intent":"ship_out","vehicle_no":"HR55AB1234","party":"Shyam Solar","operator":null,"items":[{"brand":"Waaree","spec":"575","type":"DCR","quantity":20},{"brand":"Polycab","spec":"5kw","type":"3P","quantity":5}]}
 
 add_product:
 {"intent":"add_product","items":[{"category":"Solar Panel","brand":"Waaree","spec":"650","type":"DCR"}]}
+Category must be one of: Solar Panel, Inverter, Cable, ACDB/DCDB
 
 update_rate:
 {"intent":"update_rate","items":[{"brand":"Waaree","spec":"605","type":"DCR","rate":420000}]}

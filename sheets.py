@@ -41,8 +41,22 @@ def _get_sheet(sheet_name="Stock"):
 TRANSACTION_HEADERS = [
     "Timestamp", "Type", "Brand", "Spec",
     "Qty Change", "Stock Before", "Stock After",
-    "Vehicle No", "Operator"
+    "Vehicle No", "Operator", "Party"
 ]
+
+# Maps category keywords → header text in sheet
+CATEGORY_HEADERS = {
+    "solar panel": "Solar Panel",
+    "solar":       "Solar Panel",
+    "panel":       "Solar Panel",
+    "inverter":    "Inverter",
+    "acdb":        "ACDB/DCDB",
+    "dcdb":        "ACDB/DCDB",
+    "acdb/dcdb":   "ACDB/DCDB",
+    "cable":       "Cable",
+    "cables":      "Cable",
+    "wire":        "Cable",
+}
 
 def _get_or_create_transactions_sheet():
     from config import GOOGLE_SHEET_ID
@@ -197,7 +211,7 @@ def update_rate(brand: str, spec: str, type_: str, rate: int) -> dict:
     }
 
 
-def add_stock(brand: str, spec: str, type_: str, quantity: int, operator: str) -> dict:
+def add_stock(brand: str, spec: str, type_: str, quantity: int, operator: str, party: str = "") -> dict:
     info = get_stock(brand, spec, type_)
     if not info["found"]:
         return {"success": False, "error": f"Nahi mila: {brand} {spec} {type_}"}
@@ -214,7 +228,8 @@ def add_stock(brand: str, spec: str, type_: str, quantity: int, operator: str) -
         before=before,
         after=after,
         vehicle_no="",
-        operator=operator
+        operator=operator,
+        party=party
     )
     return {
         "success": True,
@@ -224,7 +239,7 @@ def add_stock(brand: str, spec: str, type_: str, quantity: int, operator: str) -
 
 
 def deduct_stock(brand: str, spec: str, type_: str, quantity: int,
-                 vehicle_no: str, operator: str) -> dict:
+                 vehicle_no: str, operator: str, party: str = "") -> dict:
     info = get_stock(brand, spec, type_)
     if not info["found"]:
         return {
@@ -252,7 +267,8 @@ def deduct_stock(brand: str, spec: str, type_: str, quantity: int,
         before=before,
         after=after,
         vehicle_no=vehicle_no,
-        operator=operator
+        operator=operator,
+        party=party
     )
     return {
         "success": True,
@@ -265,19 +281,63 @@ def deduct_stock(brand: str, spec: str, type_: str, quantity: int,
 def add_new_product(category: str, brand: str, spec: str, type_: str, operator: str) -> dict:
     ws = _get_sheet("Stock")
     if not ws:
-        return {"success": False, "error": "Sheet1 nahi mili"}
+        return {"success": False, "error": "Stock sheet nahi mili"}
 
     all_rows = ws.get_all_values()
+
+    # Resolve category header text
+    cat_key = category.strip().lower()
+    target_cat = CATEGORY_HEADERS.get(cat_key, "")
+
+    # Find insert position:
+    # 1. Find the category section header row
+    # 2. Within it, find last row of same brand → insert after it
+    # 3. If brand not found in section → insert after last product row of section
+    # 4. If category not found at all → append at end
+
+    cat_start = None       # 0-based index of category header row
+    brand_last = None      # 0-based index of last row of same brand in section
+    section_last = None    # 0-based index of last product row in section
+
+    brand_norm = _normalize(brand)
+
+    for i, row in enumerate(all_rows):
+        cell_b = str(row[1]).strip().lower() if len(row) > 1 else ""
+        cell_a = str(row[0]).strip().lower() if len(row) > 0 else ""
+
+        # Detect category header row (merged or col B contains category name)
+        if target_cat and target_cat.lower() in (cell_b + " " + cell_a):
+            cat_start = i
+            brand_last = None   # reset when new section found
+            section_last = None
+            continue
+
+        if cat_start is not None:
+            # If we hit another category header, section ended
+            if any(h.lower() in cell_b for h in CATEGORY_HEADERS.values()) and i != cat_start:
+                break
+            if _is_product_row(row):
+                section_last = i
+                if brand_norm in _normalize(str(row[1])) or _normalize(str(row[1])) in brand_norm:
+                    brand_last = i
+
     valid_count = sum(1 for r in all_rows if _is_product_row(r))
     next_sr = valid_count + 1
+    new_row = ["", brand, spec, type_, 0, "", "", "⚪ No Stock"]
 
-    new_row = [next_sr, brand, spec, type_, 0, 0, 0, "⚪ No Stock"]
-    ws.append_row(new_row)
+    if brand_last is not None:
+        insert_idx = brand_last + 2   # +1 for 1-based, +1 to insert after
+        ws.insert_row(new_row, insert_idx)
+    elif section_last is not None:
+        insert_idx = section_last + 2
+        ws.insert_row(new_row, insert_idx)
+    else:
+        ws.append_row(new_row)
 
-    return {"success": True, "brand": brand, "spec": spec, "type": type_}
+    return {"success": True, "brand": brand, "spec": spec, "type": type_, "category": target_cat or category}
 
 
-def _log_transaction(type_, brand, spec, qty_change, before, after, vehicle_no, operator):
+def _log_transaction(type_, brand, spec, qty_change, before, after, vehicle_no, operator, party=""):
     """Silently log to TRANSACTIONS sheet. Never crashes main flow."""
     try:
         ws = _get_or_create_transactions_sheet()
@@ -287,7 +347,7 @@ def _log_transaction(type_, brand, spec, qty_change, before, after, vehicle_no, 
             datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST"),
             type_, brand, spec,
             qty_change, before, after,
-            vehicle_no, operator
+            vehicle_no, operator, party
         ])
     except Exception as e:
         logger.warning(f"Transaction log failed (non-critical): {e}")

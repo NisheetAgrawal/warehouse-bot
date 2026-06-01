@@ -4,10 +4,10 @@ import os
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
-    filters, ContextTypes
+    CallbackQueryHandler, filters, ContextTypes
 )
 from dotenv import load_dotenv
 load_dotenv()
@@ -29,7 +29,7 @@ def start_health_server():
 
 from config import TELEGRAM_TOKEN
 from groq_parser import parse_message
-from sheets import get_stock, add_stock, deduct_stock, add_new_product, update_rate
+from sheets import get_stock, add_stock, deduct_stock, add_new_product, update_rate, _normalize
 from pdf_generator import generate_delivery_receipt
 
 logging.basicConfig(
@@ -42,12 +42,14 @@ logger = logging.getLogger(__name__)
 # ── /start ───────────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🏭 *Warehouse Bot Ready!*\n\n"
-        "Yeh cheezein bhej sakte ho:\n\n"
-        "📦 *Stock check karo:*\n`kitna hai Waaree 575 DCR`\n\n"
-        "➕ *Maal aaya:*\n`aaya 100 Waaree 575 DCR`\n\n"
-        "🚛 *Truck loading:*\n`truck HR55AB1234: Waaree 575 DCR x20, Polycab 5kw 3P x5`\n\n"
-        "🆕 *Naya product add karo:*\n`naya product: Solar Panel, Waaree, 650W, DCR`",
+        "🏭 *GURUKRIPA ENTERPRISES — Warehouse Bot*\n\n"
+        "📦 *Stock check:*\n`kitna hai Waaree 575 DCR`\n\n"
+        "➕ *Maal aaya (supplier ke saath):*\n`aaya 100 Waaree 575 DCR - Raj Traders se`\n\n"
+        "🚛 *Truck loading (buyer ke saath):*\n`truck HR55AB1234: Waaree 575 DCR x20 - Shyam Solar ko`\n\n"
+        "💰 *Rate update:*\n`Waaree 605 ka rate 18500 krdo`\n\n"
+        "🆕 *Naya product add karo:*\n`naya product: Waaree, 650, DCR, Solar Panel`\n"
+        "_(Categories: Solar Panel / Inverter / Cable / ACDB/DCDB)_\n\n"
+        "✏️ *Challan edit:* Delivery ke baad PDF ke neeche Edit button aata hai",
         parse_mode="Markdown"
     )
 
@@ -59,6 +61,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id   = update.message.chat_id
 
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+
+    # Edit mode — user is correcting a previous challan
+    if context.chat_data.get("awaiting_edit"):
+        await handle_edit_input(update, context, sender, chat_id)
+        return
 
     parsed = parse_message(user_text, sender)
     intent = parsed.get("intent", "unknown")
@@ -124,6 +131,7 @@ async def _handle_check_stock(update, parsed):
 # ── Add stock ────────────────────────────────────────────────────
 async def _handle_add_stock(update, parsed, sender):
     items = parsed.get("items", [])
+    party = parsed.get("party", "")
     if not items:
         await update.message.reply_text("Kitna add karna hai? Dobara bhejo.")
         return
@@ -136,7 +144,7 @@ async def _handle_add_stock(update, parsed, sender):
             continue
         result = add_stock(
             item["brand"], item["spec"], item.get("type", "DCR"),
-            int(qty), sender
+            int(qty), sender, party
         )
         if result["success"]:
             lines.append(
@@ -146,8 +154,9 @@ async def _handle_add_stock(update, parsed, sender):
         else:
             lines.append(f"❌ {result['error']}")
 
+    party_line = f"\n🏪 Supplier: *{party}*" if party else ""
     await update.message.reply_text(
-        "📦 *Stock Updated:*\n\n" + "\n\n".join(lines),
+        f"📦 *Stock Updated:*{party_line}\n\n" + "\n\n".join(lines),
         parse_mode="Markdown"
     )
 
@@ -156,6 +165,7 @@ async def _handle_add_stock(update, parsed, sender):
 async def _handle_ship_out(update, context, parsed, sender, chat_id):
     items      = parsed.get("items", [])
     vehicle_no = parsed.get("vehicle_no") or "NOT PROVIDED"
+    party      = parsed.get("party", "")
 
     if not items:
         await update.message.reply_text("Kaunsa maal ja raha hai? Dobara bhejo.")
@@ -177,7 +187,7 @@ async def _handle_ship_out(update, context, parsed, sender, chat_id):
             continue
         result = deduct_stock(
             item["brand"], item["spec"], item.get("type", "DCR"),
-            int(qty), vehicle_no, sender
+            int(qty), vehicle_no, sender, party
         )
         if result["success"]:
             results.append(result)
@@ -191,55 +201,57 @@ async def _handle_ship_out(update, context, parsed, sender, chat_id):
         )
         return
 
-    # Generate PDF
     pdf_items = [
-        {
-            "brand":    r["brand"],
-            "spec":     r["spec"],
-            "type":     r["type"],
-            "quantity": r["quantity"],
-            "rate":     r.get("rate", 0)
-        }
+        {"brand": r["brand"], "spec": r["spec"], "type": r["type"], "quantity": r["quantity"]}
         for r in results
     ]
 
-    pdf_bytes = generate_delivery_receipt(vehicle_no, sender, pdf_items)
+    from datetime import timezone, timedelta
+    IST = timezone(timedelta(hours=5, minutes=30))
+    pdf_bytes = generate_delivery_receipt(vehicle_no, sender, pdf_items, party)
     pdf_io    = io.BytesIO(pdf_bytes)
-    pdf_name  = f"receipt_{vehicle_no}_{datetime.now().strftime('%d%b%Y')}.pdf"
+    pdf_name  = f"challan_{vehicle_no}_{datetime.now(IST).strftime('%d%b%Y_%H%M')}.pdf"
 
     total_qty = sum(r["quantity"] for r in results)
-    try:
-        total_val = sum(
-            r["quantity"] * float(
-                str(r.get("rate", 0)).replace(",", "").replace("₹", "").strip() or 0
-            )
-            for r in results
-        )
-    except Exception:
-        total_val = 0.0
 
     summary_lines = [
         f"✅ *{r['brand']} {r['spec']} {r['type']}*: -{r['quantity']} units"
         for r in results
     ]
     if errors:
-        summary_lines.append("\n⚠️ *Skipped items:*")
+        summary_lines.append("\n⚠️ *Skipped:*")
         summary_lines.extend([f"• {e}" for e in errors])
 
+    party_line = f"\n🏪 Party: *{party}*" if party else ""
     caption = (
-        f"🚛 *Delivery Receipt*\n"
-        f"Vehicle: *{vehicle_no}*\n"
-        f"Total: *{total_qty} units*\n"
-        f"Value: *₹{total_val:,.0f}*\n\n"
+        f"🚛 *Delivery Challan*\n"
+        f"Vehicle: *{vehicle_no}*{party_line}\n"
+        f"Total: *{total_qty} units*\n\n"
         + "\n".join(summary_lines)
     )
+
+    # Store last shipment for edit functionality
+    context.chat_data["last_shipment"] = {
+        "vehicle_no": vehicle_no,
+        "sender": sender,
+        "party": party,
+        "items": [
+            {"brand": r["brand"], "spec": r["spec"], "type": r["type"], "quantity": r["quantity"]}
+            for r in results
+        ]
+    }
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✏️ Edit Challan", callback_data="edit_challan")
+    ]])
 
     await context.bot.send_document(
         chat_id=chat_id,
         document=pdf_io,
         filename=pdf_name,
         caption=caption,
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        reply_markup=keyboard
     )
 
 
@@ -271,6 +283,119 @@ async def _handle_add_product(update, parsed, sender):
             lines.append(f"❌ {result.get('error', 'Error')}")
 
     await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
+
+
+# ── Edit challan callback ────────────────────────────────────────
+async def edit_challan_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+
+    last = context.chat_data.get("last_shipment")
+    if not last:
+        await query.message.reply_text("❌ Koi recent challan nahi mila edit karne ke liye.")
+        return
+
+    lines = [f"• {i['brand']} {i['spec']} {i['type']} x{i['quantity']}" for i in last["items"]]
+    context.chat_data["awaiting_edit"] = True
+
+    await query.message.reply_text(
+        "✏️ *Challan Edit Mode*\n\n"
+        "Current items:\n" + "\n".join(lines) + "\n\n"
+        "Corrected quantities bhejo — ek line per item:\n"
+        "`Waaree 575 DCR x18`\n"
+        "`Polycab 5kw 3P x3`\n\n"
+        "Sirf woh items bhejo jo change karne hain.",
+        parse_mode="Markdown"
+    )
+
+
+async def handle_edit_input(update, context, sender, chat_id):
+    """Process correction lines like 'Waaree 575 DCR x18'"""
+    last = context.chat_data.get("last_shipment", {})
+    text = update.message.text.strip()
+    context.chat_data["awaiting_edit"] = False
+
+    corrections = []
+    for line in text.splitlines():
+        line = line.strip().lstrip("•-").strip()
+        if not line:
+            continue
+        parsed = parse_message(line, sender)
+        items = parsed.get("items", [])
+        if items:
+            corrections.extend(items)
+
+    if not corrections:
+        await update.message.reply_text("❌ Format samajh nahi aaya. Example: `Waaree 575 DCR x18`", parse_mode="Markdown")
+        return
+
+    results = []
+    errors  = []
+
+    for corr in corrections:
+        new_qty = int(corr.get("quantity", 0))
+        if new_qty <= 0:
+            errors.append(f"Quantity missing: {corr['brand']} {corr['spec']}")
+            continue
+
+        # Find original item to calculate diff
+        orig_qty = 0
+        for orig in last.get("items", []):
+            if (_normalize(orig["brand"]) in _normalize(corr["brand"]) or
+                    _normalize(corr["brand"]) in _normalize(orig["brand"])):
+                orig_qty = orig["quantity"]
+                break
+
+        diff = new_qty - orig_qty  # positive = need to add back more, negative = deduct more
+        brand, spec, type_ = corr["brand"], corr["spec"], corr.get("type", "DCR")
+
+        if diff < 0:
+            # Deduct more
+            result = deduct_stock(brand, spec, type_, abs(diff), last["vehicle_no"], sender, last.get("party", ""))
+        elif diff > 0:
+            # Add back the over-deducted amount
+            result = add_stock(brand, spec, type_, diff, sender, last.get("party", ""))
+        else:
+            results.append({"brand": brand, "spec": spec, "type": type_, "quantity": new_qty, "rate": 0})
+            continue
+
+        if result["success"]:
+            results.append({"brand": brand, "spec": spec, "type": type_, "quantity": new_qty, "rate": 0})
+        else:
+            errors.append(result.get("error", "Unknown error"))
+
+    # Update last_shipment with corrected quantities
+    for corr in corrections:
+        for orig in context.chat_data["last_shipment"]["items"]:
+            if _normalize(orig["brand"]) in _normalize(corr["brand"]) or _normalize(corr["brand"]) in _normalize(orig["brand"]):
+                orig["quantity"] = int(corr.get("quantity", orig["quantity"]))
+
+    if not results and errors:
+        await update.message.reply_text("❌ Edit fail:\n" + "\n".join(errors), parse_mode="Markdown")
+        return
+
+    # Regenerate PDF with all corrected items
+    all_items = context.chat_data["last_shipment"]["items"]
+    from datetime import timezone, timedelta
+    IST = timezone(timedelta(hours=5, minutes=30))
+    pdf_bytes = generate_delivery_receipt(last["vehicle_no"], sender, all_items, last.get("party", ""))
+    pdf_io    = io.BytesIO(pdf_bytes)
+    pdf_name  = f"challan_EDITED_{last['vehicle_no']}_{datetime.now(IST).strftime('%d%b%Y_%H%M')}.pdf"
+
+    lines = [f"✅ *{i['brand']} {i['spec']} {i['type']}*: {i['quantity']} units" for i in all_items]
+    if errors:
+        lines.append("\n⚠️ Skipped:\n" + "\n".join(errors))
+
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Edit Challan", callback_data="edit_challan")]])
+
+    await context.bot.send_document(
+        chat_id=chat_id,
+        document=pdf_io,
+        filename=pdf_name,
+        caption="✏️ *Edited Challan*\n\n" + "\n".join(lines),
+        parse_mode="Markdown",
+        reply_markup=keyboard
+    )
 
 
 # ── Update rate ──────────────────────────────────────────────────
@@ -323,6 +448,7 @@ def main():
     start_health_server()
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(edit_challan_callback, pattern="^edit_challan$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
     logger.info("Warehouse bot starting...")

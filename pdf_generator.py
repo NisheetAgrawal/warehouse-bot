@@ -15,9 +15,10 @@ RED_COLOR   = colors.HexColor("#CC0000")
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
-def generate_delivery_receipt(vehicle_no: str, operator: str, items: list) -> bytes:
+def generate_delivery_receipt(vehicle_no: str, operator: str, items: list, party: str = "") -> bytes:
     """
     items: list of dicts — brand, spec, type, quantity
+    party: customer/receiver name (optional)
     Returns PDF bytes.
     """
     buffer = io.BytesIO()
@@ -39,9 +40,9 @@ def generate_delivery_receipt(vehicle_no: str, operator: str, items: list) -> by
     h_date    = ParagraphStyle("hd", fontSize=9,  textColor=colors.gray,  fontName="Helvetica", alignment=TA_RIGHT)
 
     header_data = [
-        [Paragraph("SOLAR WAREHOUSE", h_company),
+        [Paragraph("GURUKRIPA ENTERPRISES", h_company),
          Paragraph("DELIVERY CHALLAN", h_title)],
-        [Paragraph("Inventory Management System", h_sub),
+        [Paragraph("Solar Equipment Supplier", h_sub),
          Paragraph(f"{date_str} &middot; {time_str}", h_date)]
     ]
     header_table = Table(header_data, colWidths=[100*mm, 81*mm])
@@ -58,13 +59,16 @@ def generate_delivery_receipt(vehicle_no: str, operator: str, items: list) -> by
     lbl     = ParagraphStyle("lbl", fontSize=8, textColor=colors.white, fontName="Helvetica-Bold", alignment=TA_CENTER)
     val     = ParagraphStyle("val", fontSize=11, textColor=BRAND_COLOR, fontName="Helvetica-Bold", alignment=TA_CENTER)
 
+    party_label = "PARTY / RECEIVER"
     meta_data = [
-        [Paragraph("VEHICLE NUMBER", lbl), Paragraph("DATE & TIME", lbl), Paragraph("OPERATOR", lbl)],
+        [Paragraph("VEHICLE NUMBER", lbl), Paragraph("DATE & TIME", lbl),
+         Paragraph("OPERATOR", lbl), Paragraph(party_label, lbl)],
         [Paragraph(vehicle_no, v_style),
          Paragraph(f"{date_str}<br/>{time_str}", val),
-         Paragraph(operator, val)]
+         Paragraph(operator, val),
+         Paragraph(party or "—", val)]
     ]
-    meta_table = Table(meta_data, colWidths=[61*mm, 60*mm, 60*mm])
+    meta_table = Table(meta_data, colWidths=[46*mm, 46*mm, 46*mm, 43*mm])
     meta_table.setStyle(TableStyle([
         ("BACKGROUND",    (0,0), (-1,0), BRAND_COLOR),
         ("BACKGROUND",    (0,1), (-1,1), LIGHT_BLUE),
