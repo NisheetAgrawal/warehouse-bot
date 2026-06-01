@@ -349,12 +349,12 @@ async def handle_edit_input(update, context, sender, chat_id):
         diff = new_qty - orig_qty  # positive = need to add back more, negative = deduct more
         brand, spec, type_ = corr["brand"], corr["spec"], corr.get("type", "DCR")
 
-        if diff < 0:
-            # Deduct more
-            result = deduct_stock(brand, spec, type_, abs(diff), last["vehicle_no"], sender, last.get("party", ""))
-        elif diff > 0:
-            # Add back the over-deducted amount
-            result = add_stock(brand, spec, type_, diff, sender, last.get("party", ""))
+        if diff > 0:
+            # Shipped too few originally — deduct the extra difference
+            result = deduct_stock(brand, spec, type_, diff, last["vehicle_no"], sender, last.get("party", ""))
+        elif diff < 0:
+            # Shipped too many originally — add back the excess
+            result = add_stock(brand, spec, type_, abs(diff), sender, last.get("party", ""))
         else:
             results.append({"brand": brand, "spec": spec, "type": type_, "quantity": new_qty, "rate": 0})
             continue
