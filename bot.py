@@ -29,7 +29,7 @@ def start_health_server():
 
 from config import TELEGRAM_TOKEN
 from groq_parser import parse_message
-from sheets import get_stock, add_stock, deduct_stock, add_new_product, update_rate, _normalize
+from sheets import get_stock, add_stock, deduct_stock, add_new_product, update_rate, _normalize, search_similar_products
 from pdf_generator import generate_delivery_receipt
 
 logging.basicConfig(
@@ -72,10 +72,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"User={sender} | Intent={intent} | Text={user_text[:60]}")
 
     if intent == "check_stock":
-        await _handle_check_stock(update, parsed)
+        await _handle_check_stock(update, parsed, context)
 
     elif intent == "add_stock":
-        await _handle_add_stock(update, parsed, sender)
+        await _handle_add_stock(update, parsed, sender, context)
 
     elif intent == "ship_out":
         await _handle_ship_out(update, context, parsed, sender, chat_id)
@@ -99,7 +99,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ── Check stock ──────────────────────────────────────────────────
-async def _handle_check_stock(update, parsed):
+async def _handle_check_stock(update, parsed, context):
     items = parsed.get("items", [])
     if not items:
         await update.message.reply_text("Kaunsa product? Dobara bhejo.")
@@ -109,7 +109,7 @@ async def _handle_check_stock(update, parsed):
     for item in items:
         info = get_stock(item["brand"], item["spec"], item.get("type", "DCR"))
         if not info["found"]:
-            lines.append(f"❌ *{item['brand']} {item['spec']} {item.get('type','')}* — sheet mein nahi mila")
+            await _suggest_products(update, context, item, {"intent": "check_stock"})
             continue
         qty  = info["quantity"]
         rate = info["rate"]
@@ -129,7 +129,7 @@ async def _handle_check_stock(update, parsed):
 
 
 # ── Add stock ────────────────────────────────────────────────────
-async def _handle_add_stock(update, parsed, sender):
+async def _handle_add_stock(update, parsed, sender, context):
     items = parsed.get("items", [])
     party = parsed.get("party", "")
     if not items:
@@ -151,6 +151,9 @@ async def _handle_add_stock(update, parsed, sender):
                 f"✅ *{result['brand']} {result['spec']} {result['type']}*\n"
                 f"{result['before']} → *{result['after']}* (+{result['quantity']})"
             )
+        elif "Nahi mila" in result.get("error", ""):
+            await _suggest_products(update, context, item,
+                {"intent": "add_stock", "sender": sender, "party": party, **item})
         else:
             lines.append(f"❌ {result['error']}")
 
@@ -191,6 +194,10 @@ async def _handle_ship_out(update, context, parsed, sender, chat_id):
         )
         if result["success"]:
             results.append(result)
+        elif "Nahi mila" in result.get("error", ""):
+            await _suggest_products(update, context, item,
+                {"intent": "ship_out", "sender": sender, "party": party,
+                 "vehicle_no": vehicle_no, **item})
         else:
             errors.append(result.get("error", "Unknown error"))
 
@@ -283,6 +290,114 @@ async def _handle_add_product(update, parsed, sender):
             lines.append(f"❌ {result.get('error', 'Error')}")
 
     await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
+
+
+# ── Product suggestion helpers ───────────────────────────────────
+import json as _json
+
+async def _suggest_products(update, context, failed_item: dict, action_context: dict):
+    """Show 'Did you mean?' buttons when product not found."""
+    suggestions = search_similar_products(
+        failed_item["brand"], failed_item["spec"], failed_item.get("type", "DCR")
+    )
+    if not suggestions:
+        await update.message.reply_text(
+            f"❌ *{failed_item['brand']} {failed_item['spec']}* sheet mein nahi mila.\n"
+            "Pehle `naya product` se add karo.",
+            parse_mode="Markdown"
+        )
+        return
+
+    # Store pending action so callback can execute it
+    context.chat_data["pending_action"] = {
+        "action_context": action_context,   # intent, vehicle_no, party, sender, other items
+        "failed_item":    failed_item,
+    }
+
+    buttons = []
+    for i, s in enumerate(suggestions):
+        label = f"{s['brand']} {s['spec']} {s['type']} (stock: {s['quantity']})"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"pick_{i}")])
+    buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="pick_cancel")])
+
+    context.chat_data["suggestions"] = suggestions
+    await update.message.reply_text(
+        f"❓ *'{failed_item['brand']} {failed_item['spec']}'* exactly nahi mila.\n\n"
+        "Kya in mein se koi hai?",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+async def product_pick_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data == "pick_cancel":
+        context.chat_data.pop("pending_action", None)
+        context.chat_data.pop("suggestions", None)
+        await query.message.reply_text("❌ Cancelled.")
+        return
+
+    idx = int(data.split("_")[1])
+    suggestions   = context.chat_data.get("suggestions", [])
+    pending       = context.chat_data.get("pending_action", {})
+    action_ctx    = pending.get("action_context", {})
+    failed_item   = pending.get("failed_item", {})
+
+    if idx >= len(suggestions):
+        await query.message.reply_text("❌ Invalid selection.")
+        return
+
+    chosen = suggestions[idx]
+    # Replace failed item fields with chosen product
+    corrected_item = {**failed_item, "brand": chosen["brand"], "spec": chosen["spec"], "type": chosen["type"]}
+
+    intent   = action_ctx.get("intent")
+    sender   = action_ctx.get("sender", "Unknown")
+    party    = action_ctx.get("party", "")
+    chat_id  = query.message.chat_id
+
+    if intent == "check_stock":
+        info = get_stock(chosen["brand"], chosen["spec"], chosen["type"])
+        qty  = info["quantity"]
+        rate = info.get("rate", "")
+        status = "✅ In Stock" if qty >= 5 else ("⚠️ Low Stock" if qty > 0 else "❌ Out of Stock")
+        rate_str = f"₹{rate}" if rate and str(rate).strip() not in ("0", "", "N/A") else "Rate set nahi"
+        await query.message.reply_text(
+            f"*{chosen['brand']} {chosen['spec']} {chosen['type']}*\n"
+            f"Stock: *{qty} units* {status}\nRate: {rate_str}",
+            parse_mode="Markdown"
+        )
+
+    elif intent == "add_stock":
+        qty = int(corrected_item.get("quantity", 0))
+        result = add_stock(chosen["brand"], chosen["spec"], chosen["type"], qty, sender, party)
+        if result["success"]:
+            await query.message.reply_text(
+                f"✅ *{result['brand']} {result['spec']} {result['type']}*\n"
+                f"{result['before']} → *{result['after']}* (+{qty})",
+                parse_mode="Markdown"
+            )
+        else:
+            await query.message.reply_text(f"❌ {result['error']}")
+
+    elif intent == "ship_out":
+        qty        = int(corrected_item.get("quantity", 0))
+        vehicle_no = action_ctx.get("vehicle_no", "NOT PROVIDED")
+        result = deduct_stock(chosen["brand"], chosen["spec"], chosen["type"], qty, vehicle_no, sender, party)
+        if result["success"]:
+            await query.message.reply_text(
+                f"✅ *{result['brand']} {result['spec']} {result['type']}*: -{qty} units\n"
+                f"Stock: {result['before']} → *{result['after']}*",
+                parse_mode="Markdown"
+            )
+        else:
+            await query.message.reply_text(f"❌ {result['error']}")
+
+    context.chat_data.pop("pending_action", None)
+    context.chat_data.pop("suggestions", None)
 
 
 # ── Edit challan callback ────────────────────────────────────────
@@ -474,6 +589,7 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(edit_challan_callback, pattern="^edit_challan$"))
+    app.add_handler(CallbackQueryHandler(product_pick_callback, pattern="^pick_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
     logger.info("Warehouse bot starting...")

@@ -158,6 +158,60 @@ def find_product_row(brand: str, spec: str, type_: str):
     return None, None
 
 
+def search_similar_products(brand: str, spec: str, type_: str, top_n: int = 4) -> list:
+    """
+    Fuzzy search — returns top_n closest products when exact match fails.
+    Each result: {brand, spec, type, quantity, row_idx, score}
+    """
+    ws = _get_sheet("Stock")
+    if not ws:
+        return []
+
+    all_rows = ws.get_all_values()
+    brand_q = _normalize(brand)
+    spec_q  = _normalize(spec).replace("w", "").replace("kw", "")
+    type_q  = _normalize(type_).replace("-", "")
+
+    scored = []
+    for i, row in enumerate(all_rows):
+        if not _is_product_row(row):
+            continue
+        row_brand = _normalize(row[1])
+        row_spec  = _normalize(str(row[2])).replace("w", "").replace("kw", "")
+        row_type  = _normalize(str(row[3])).replace("-", "")
+
+        score = 0
+        # Brand match scoring
+        if brand_q in row_brand or row_brand in brand_q:
+            score += 3
+        elif any(c in row_brand for c in brand_q if len(c) > 2):
+            score += 1
+        # Spec match scoring
+        if spec_q == row_spec:
+            score += 3
+        elif spec_q in row_spec or row_spec in spec_q:
+            score += 2
+        elif spec_q[:3] == row_spec[:3] and len(spec_q) >= 3:
+            score += 1
+        # Type match scoring
+        if type_q == row_type or not type_q or not row_type:
+            score += 1
+
+        if score > 0:
+            qty = int(row[4]) if len(row) > 4 and str(row[4]).isdigit() else 0
+            scored.append({
+                "brand":    row[1].strip(),
+                "spec":     row[2].strip(),
+                "type":     row[3].strip(),
+                "quantity": qty,
+                "row_idx":  i + 1,
+                "score":    score
+            })
+
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    return scored[:top_n]
+
+
 def get_stock(brand: str, spec: str, type_: str) -> dict:
     row_idx, row = find_product_row(brand, spec, type_)
     if row_idx is None:
