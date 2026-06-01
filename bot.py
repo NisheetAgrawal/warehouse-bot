@@ -309,6 +309,32 @@ async def edit_challan_callback(update, context):
     )
 
 
+def _parse_correction_line(line: str):
+    """
+    Parse 'Waaree 575 DCR x18' or 'Citizen 550 DCR X10' directly — no Groq needed.
+    Returns dict with brand/spec/type/quantity or None.
+    """
+    import re
+    line = line.strip().lstrip("•-").strip()
+    qty_match = re.search(r'[xX×]\s*(\d+)', line)
+    if not qty_match:
+        # Try trailing number: "Citizen 550 DCR 10"
+        qty_match = re.search(r'\s(\d+)\s*$', line)
+    if not qty_match:
+        return None
+    qty = int(qty_match.group(1))
+    rest = line[:qty_match.start()].strip()
+    parts = rest.split()
+    if not parts:
+        return None
+    type_ = "DCR"
+    if parts and parts[-1].upper() in ("DCR", "N-DCR", "NDCR", "1P", "3P"):
+        type_ = parts.pop()
+    brand = parts[0] if parts else ""
+    spec  = " ".join(parts[1:]) if len(parts) > 1 else ""
+    return {"brand": brand, "spec": spec, "type": type_, "quantity": qty}
+
+
 async def handle_edit_input(update, context, sender, chat_id):
     """Process correction lines like 'Waaree 575 DCR x18'"""
     last = context.chat_data.get("last_shipment", {})
@@ -317,16 +343,15 @@ async def handle_edit_input(update, context, sender, chat_id):
 
     corrections = []
     for line in text.splitlines():
-        line = line.strip().lstrip("•-").strip()
-        if not line:
-            continue
-        parsed = parse_message(line, sender)
-        items = parsed.get("items", [])
-        if items:
-            corrections.extend(items)
+        c = _parse_correction_line(line)
+        if c:
+            corrections.append(c)
 
     if not corrections:
-        await update.message.reply_text("❌ Format samajh nahi aaya. Example: `Waaree 575 DCR x18`", parse_mode="Markdown")
+        await update.message.reply_text(
+            "❌ Format samajh nahi aaya.\nExample: `Citizen 550 DCR x10`",
+            parse_mode="Markdown"
+        )
         return
 
     results = []
