@@ -41,9 +41,9 @@ CATEGORY CONTEXT (ignore category words when extracting brand/spec):
 PVC MATERIAL — product name IS the brand (these are product names, not descriptions):
 - "25mm UPVC kitna hai" → brand="25mm UPVC", spec="25mm"
 - "flexible pipe kitna hai" → brand="Flexible pipe", spec="25mm"
-- "bend kitna hai" → brand="Bend", spec="25mm"
-- "tee kitna hai" → brand="Tee", spec="25mm"
-- "elow kitna hai" → brand="Elow", spec="25mm"
+- "bend kitna hai" → brand="Bend", spec=""
+- "tee kitna hai" → brand="Tee", spec=""
+- "elow kitna hai" → brand="Elow", spec=""
 - "MC4 connector kitna hai" → brand="MC4 Connector", spec=""
 - NEVER map PVC product names to solar brands like Waaree/Adani/Citizen etc.
 
