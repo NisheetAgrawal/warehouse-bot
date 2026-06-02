@@ -10,16 +10,18 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive"
 ]
 
-# Rows where Brand column contains these strings are category headers — skip them
+# Col B values that indicate a category/section header row — skip these
 HEADER_KEYWORDS = {
-    "solar panel", "inverter", "acdb/dcdb", "cable", "cables",
-    "brand", "sr.no", "sr no", "category", "watt", "kw", "product"
+    "solar panel", "inverter", "acdb/dcdb", "cable", "cables", "dc cable",
+    "ac cable", "ac cable 4sx2c", "earthing cable", "pvc material",
+    "brand", "sr.no", "sr no", "category", "watt", "kw", "product",
+    "meters", "pcs", "quantity", "stock status", "rate", "total"
 }
 
-# Valid product brands (lowercase)
-VALID_BRANDS = {
-    "waaree", "adani", "citizen", "polycab", "deye", "microtek", "eastman",
-    "acdb", "dcdb", "havells"
+# Col C spec values that indicate a header row — skip these
+HEADER_SPEC_KEYWORDS = {
+    "watt", "kw", "meter", "meters", "pcs", "spec", "quantity",
+    "stock status", "rate", "total", "type"
 }
 
 
@@ -74,28 +76,37 @@ def _get_or_create_transactions_sheet():
 
 def _is_product_row(row: list) -> bool:
     """
-    Sheet columns: Sr.no | Brand | Watt | DCR/N-DCR | Quantity | Rate | Total | Stock Status
-    A valid product row:
-    - Column B (index 1): a known brand name
-    - Column C (index 2): a non-empty spec value
+    A product row has:
+    - Column A (index 0): a digit (1, 2, 3...) — section/category headers use Roman numerals or letters
+    - Column B (index 1): non-empty brand/product name that is not a known header keyword
+    - Column C (index 2): non-empty spec value that is not a header keyword
+
+    This approach works for ANY brand added directly to the sheet —
+    no hardcoded brand list needed.
     """
     if len(row) < 3:
         return False
+
+    col_a    = str(row[0]).strip()
     brand_raw = str(row[1]).strip()
-    spec_raw = str(row[2]).strip()
-    brand_lower = brand_raw.lower().replace(".", "").replace(" ", "")
+    spec_raw  = str(row[2]).strip()
+
+    # Col A must be a number to be a product row
+    if not col_a.isdigit():
+        return False
 
     if not brand_raw or not spec_raw:
         return False
+
+    brand_lower = brand_raw.lower().strip()
+    spec_lower  = spec_raw.lower().strip()
+
     if brand_lower in HEADER_KEYWORDS:
         return False
-    if spec_raw.lower() in ("watt", "kw", "meter", "spec", ""):
+    if spec_lower in HEADER_SPEC_KEYWORDS or spec_lower == "":
         return False
-    # Brand must be a known brand
-    for valid in VALID_BRANDS:
-        if valid in brand_lower:
-            return True
-    return False
+
+    return True
 
 
 def _normalize(text: str) -> str:

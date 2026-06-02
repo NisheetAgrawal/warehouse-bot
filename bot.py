@@ -1,8 +1,6 @@
 import logging
 import io
 import os
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -12,20 +10,6 @@ from telegram.ext import (
 from dotenv import load_dotenv
 load_dotenv()
 
-# Render requires a port to be open — run a minimal health server
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Warehouse bot is running")
-    def log_message(self, *args):
-        pass  # silence access logs
-
-def start_health_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    logging.getLogger(__name__).info(f"Health server on port {port}")
 
 from config import TELEGRAM_TOKEN
 from groq_parser import parse_message
@@ -687,19 +671,33 @@ async def error_handler(update, context):
 # ── Entry point ──────────────────────────────────────────────────
 def main():
     import asyncio
-    # Python 3.10+ no longer auto-creates an event loop — set one explicitly
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    start_health_server()
+    # WEBHOOK_URL must be set in Render env vars, e.g. https://warehouse-bot-3vw0.onrender.com
+    webhook_url = os.environ.get("WEBHOOK_URL", "").rstrip("/")
+    port = int(os.environ.get("PORT", 8080))
+
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(edit_challan_callback, pattern="^edit_challan$"))
     app.add_handler(CallbackQueryHandler(product_pick_callback, pattern="^pick_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
-    logger.info("Warehouse bot starting...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+    if webhook_url:
+        logger.info(f"Starting in WEBHOOK mode on port {port} → {webhook_url}")
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            webhook_url=f"{webhook_url}/{TELEGRAM_TOKEN}",
+            url_path=TELEGRAM_TOKEN,
+            allowed_updates=Update.ALL_TYPES,
+        )
+    else:
+        # Fallback to polling for local development
+        logger.info("WEBHOOK_URL not set — falling back to polling mode")
+        app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
