@@ -1,6 +1,8 @@
 import logging
 import io
 import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -697,8 +699,17 @@ def main():
             allowed_updates=Update.ALL_TYPES,
         )
     else:
-        # Fallback to polling for local development
-        logger.info("WEBHOOK_URL not set — falling back to polling mode")
+        # Fallback to polling — start health server so Render doesn't restart the process
+        logger.info("WEBHOOK_URL not set — polling mode with health server")
+        class _H(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200); self.end_headers()
+                self.wfile.write(b"Warehouse bot is running (polling mode)")
+            def log_message(self, *a): pass
+        threading.Thread(
+            target=HTTPServer(("0.0.0.0", port), _H).serve_forever,
+            daemon=True
+        ).start()
         app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
