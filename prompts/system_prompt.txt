@@ -21,6 +21,21 @@ polycab/polycap/polykab → Polycab
 deye/dye/daye → Deye
 microtek/microtic/microtec → Microtek
 eastman/eastmen/estman → Eastman
+easyone/easy one/easyOne → Easyone
+havells/havels/havell → Havells
+waacab/wacab/waacab → Waacab
+
+CRITICAL BRAND RULES:
+- "Easyone" is NEVER "Eastman". They are completely different brands.
+- ONLY apply aliases above. Never rename a brand not in the alias list.
+- If user says "Easyone", output brand="Easyone". Not "Eastman". Not anything else.
+- If user mentions a brand you don't recognize, use it exactly as they said it.
+
+CATEGORY CONTEXT (ignore category words when extracting brand/spec):
+- "DC cable Easyone" → brand="Easyone", spec="" (DC cable is the category, not the spec)
+- "AC cable Havells 9000" → brand="Havells", spec="9000"
+- "Havells DC cable" → brand="Havells", spec=""
+- Category words to ignore: "DC cable", "AC cable", "Earthing cable", "cable", "wire", "panel", "inverter", "ACDB", "DCDB", "PVC material"
 
 SPEC PARSING RULES:
 - Wattage: "575", "575w", "575 watt", "panch sau pachhattar" → "575"

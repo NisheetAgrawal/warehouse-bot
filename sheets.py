@@ -117,11 +117,16 @@ def _specs_match(row_spec: str, row_type: str, query_spec: str, query_type: str)
     """
     Fuzzy match spec and type between sheet row and query.
     Handles: "575" vs "575w", "3kw" vs "3KW", "1P" vs "1p", "N-DCR" vs "n-dcr"
+    If query_spec is empty, match any spec (user only specified the brand).
     """
     rs = _normalize(row_spec)
     rt = _normalize(row_type).replace("-", "")
     qs = _normalize(query_spec)
     qt = _normalize(query_type).replace("-", "")
+
+    # Empty spec = user didn't specify → match any
+    if not qs:
+        return True
 
     # Strip units for numeric comparison
     rs_num = rs.replace("w", "").replace("kw", "").replace("k", "")
