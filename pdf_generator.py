@@ -88,13 +88,14 @@ def generate_delivery_receipt(vehicle_no: str, operator: str, items: list, party
     total_qty = 0
 
     for i, item in enumerate(items):
-        qty = int(item.get("quantity", 0))
+        qty  = int(item.get("quantity", 0))
+        unit = item.get("unit", "nos")
         total_qty += qty
         table_data.append([
             str(i + 1),
             item.get("brand", ""),
             f"{item.get('spec', '')} {item.get('type', '')}".strip(),
-            str(qty),
+            f"{qty} {unit}",
         ])
 
     # Total row

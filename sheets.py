@@ -259,8 +259,9 @@ def get_stock(brand: str, spec: str, type_: str) -> dict:
 
     qty_raw = str(row[4]).strip() if len(row) > 4 else "0"
     qty = int(qty_raw) if qty_raw.isdigit() else 0
-    rate = row[5].strip() if len(row) > 5 else "N/A"
+    rate   = row[5].strip() if len(row) > 5 else "N/A"
     status = row[7].strip() if len(row) > 7 else ""
+    unit   = row[8].strip() if len(row) > 8 and row[8] else "nos"
 
     return {
         "found": True,
@@ -268,6 +269,7 @@ def get_stock(brand: str, spec: str, type_: str) -> dict:
         "spec": row[2].strip(),
         "type": row[3].strip(),
         "quantity": qty,
+        "unit": unit,
         "rate": rate,
         "status": status,
         "row_idx": row_idx
@@ -328,7 +330,8 @@ def add_stock(brand: str, spec: str, type_: str, quantity: int, operator: str, p
     return {
         "success": True,
         "brand": info["brand"], "spec": info["spec"], "type": info["type"],
-        "before": before, "after": after, "quantity": quantity
+        "before": before, "after": after, "quantity": quantity,
+        "unit": info.get("unit", "nos")
     }
 
 
@@ -368,7 +371,7 @@ def deduct_stock(brand: str, spec: str, type_: str, quantity: int,
         "success": True,
         "brand": info["brand"], "spec": info["spec"], "type": info["type"],
         "before": before, "after": after, "quantity": quantity,
-        "rate": info["rate"]
+        "rate": info["rate"], "unit": info.get("unit", "nos")
     }
 
 

@@ -100,6 +100,7 @@ async def _handle_check_stock(update, parsed, context):
             continue
         qty  = info["quantity"]
         rate = info["rate"]
+        unit = info.get("unit", "nos")
         if qty == 0:
             status = "❌ Out of Stock"
         elif qty < 5:
@@ -109,7 +110,7 @@ async def _handle_check_stock(update, parsed, context):
         rate_str = f"₹{rate}" if rate and str(rate).strip() not in ("0", "", "N/A") else "Rate set nahi"
         lines.append(
             f"*{info['brand']} {info['spec']} {info['type']}*\n"
-            f"Stock: *{qty} units* {status}\n"
+            f"Stock: *{qty} {unit}* {status}\n"
             f"Rate: {rate_str}"
         )
     await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
@@ -138,9 +139,10 @@ async def _handle_add_stock(update, parsed, sender, context):
             continue
         result = add_stock(info["brand"], info["spec"], info["type"], int(qty), sender, party)
         if result["success"]:
+            u = result.get("unit", "nos")
             lines.append(
                 f"✅ *{result['brand']} {result['spec']} {result['type']}*\n"
-                f"{result['before']} → *{result['after']}* (+{result['quantity']})"
+                f"{result['before']} → *{result['after']} {u}* (+{result['quantity']} {u})"
             )
         else:
             lines.append(f"❌ {result['error']}")
@@ -221,13 +223,13 @@ async def _execute_ship_out(update_or_query, context, items, vehicle_no, party, 
 
     from datetime import timezone, timedelta
     IST = timezone(timedelta(hours=5, minutes=30))
-    pdf_items = [{"brand": r["brand"], "spec": r["spec"], "type": r["type"], "quantity": r["quantity"]} for r in results]
+    pdf_items = [{"brand": r["brand"], "spec": r["spec"], "type": r["type"], "quantity": r["quantity"], "unit": r.get("unit", "nos")} for r in results]
     pdf_bytes = generate_delivery_receipt(vehicle_no, sender, pdf_items, party)
     pdf_io    = io.BytesIO(pdf_bytes)
     pdf_name  = f"challan_{vehicle_no}_{datetime.now(IST).strftime('%d%b%Y_%H%M')}.pdf"
 
     total_qty = sum(r["quantity"] for r in results)
-    summary_lines = [f"✅ *{r['brand']} {r['spec']} {r['type']}*: -{r['quantity']} units" for r in results]
+    summary_lines = [f"✅ *{r['brand']} {r['spec']} {r['type']}*: -{r['quantity']} {r.get('unit','nos')}" for r in results]
     if errors:
         summary_lines += ["\n⚠️ *Skipped:*"] + [f"• {e}" for e in errors]
 
