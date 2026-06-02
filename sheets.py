@@ -95,15 +95,17 @@ def _is_product_row(row: list) -> bool:
     if not col_a.isdigit():
         return False
 
-    if not brand_raw or not spec_raw:
+    if not brand_raw:
         return False
 
     brand_lower = brand_raw.lower().strip()
     spec_lower  = spec_raw.lower().strip()
 
+    # Skip known category/section headers in brand column
     if brand_lower in HEADER_KEYWORDS:
         return False
-    if spec_lower in HEADER_SPEC_KEYWORDS or spec_lower == "":
+    # Skip if spec column has a header keyword (but allow empty spec — cables/PVC have no spec)
+    if spec_lower in HEADER_SPEC_KEYWORDS:
         return False
 
     return True
