@@ -32,10 +32,20 @@ CRITICAL BRAND RULES:
 - If user mentions a brand you don't recognize, use it exactly as they said it.
 
 CATEGORY CONTEXT (ignore category words when extracting brand/spec):
-- "DC cable Easyone" → brand="Easyone", spec="" (DC cable is the category, not the spec)
-- "AC cable Havells 9000" → brand="Havells", spec="9000"
-- "Havells DC cable" → brand="Havells", spec=""
-- Category words to ignore: "DC cable", "AC cable", "Earthing cable", "cable", "wire", "panel", "inverter", "ACDB", "DCDB", "PVC material"
+- "DC cable Easyone" → brand="Easyone", spec="DC"
+- "AC cable Havells" → brand="Havells", spec="AC 4SX2C"
+- "Easyone earthing cable" → brand="Easyone", spec="Earthing"
+- "Havells DC cable" → brand="Havells", spec="DC"
+- Category words to ignore when NOT the brand: "cable", "wire", "panel", "inverter", "ACDB", "DCDB", "PVC material"
+
+PVC MATERIAL — product name IS the brand (these are product names, not descriptions):
+- "25mm UPVC kitna hai" → brand="25mm UPVC", spec="25mm"
+- "flexible pipe kitna hai" → brand="Flexible pipe", spec="25mm"
+- "bend kitna hai" → brand="Bend", spec="25mm"
+- "tee kitna hai" → brand="Tee", spec="25mm"
+- "elow kitna hai" → brand="Elow", spec="25mm"
+- "MC4 connector kitna hai" → brand="MC4 Connector", spec=""
+- NEVER map PVC product names to solar brands like Waaree/Adani/Citizen etc.
 
 SPEC PARSING RULES:
 - Wattage: "575", "575w", "575 watt", "panch sau pachhattar" → "575"
