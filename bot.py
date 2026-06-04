@@ -53,15 +53,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_edit_input(update, context, sender, chat_id)
         return
 
-    # Product form mode — user filled in the add-product template
-    if context.chat_data.get("awaiting_product_form"):
-        await _handle_product_form_reply(update, context, sender)
-        return
-
     # Detect "add product" trigger phrases BEFORE sending to Groq
     _lower = user_text.lower()
     if any(kw in _lower for kw in ("naya product", "add product", "add new product", "new product", "naaya product")):
         await _handle_add_product(update, {}, sender, context)
+        return
+
+    # Detect filled product form by content — works even after bot restart
+    if _is_product_form(user_text):
+        await _handle_product_form_reply(update, context, sender)
         return
 
     parsed = parse_message(user_text, sender)
@@ -291,6 +291,12 @@ async def _handle_add_product(update, parsed, sender, context):
     await update.message.reply_text(PRODUCT_FORM_TEMPLATE, parse_mode="Markdown")
 
 
+def _is_product_form(text: str) -> bool:
+    """Detect if a message is a filled product form (has Category: and Brand: lines)."""
+    t = text.lower()
+    return "category:" in t and "brand:" in t
+
+
 def _parse_product_form(text: str) -> dict:
     """Parse key:value lines from the product form reply."""
     result = {}
@@ -306,7 +312,7 @@ def _parse_product_form(text: str) -> dict:
 
 
 async def _handle_product_form_reply(update, context, sender):
-    context.chat_data["awaiting_product_form"] = False
+    context.chat_data.pop("awaiting_product_form", None)
     text = update.message.text.strip()
     data = _parse_product_form(text)
 
