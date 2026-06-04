@@ -15,7 +15,7 @@ load_dotenv()
 
 from config import TELEGRAM_TOKEN
 from groq_parser import parse_message
-from sheets import get_stock, add_stock, deduct_stock, add_new_product, update_rate, _normalize, search_similar_products, get_all_products_by_brand, get_party_summary
+from sheets import get_stock, add_stock, deduct_stock, add_new_product, update_rate, _normalize, search_similar_products, get_all_products_by_brand, get_party_summary, get_full_stock
 from pdf_generator import generate_delivery_receipt
 
 logging.basicConfig(
@@ -38,6 +38,60 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✏️ *Challan edit:* Delivery ke baad PDF ke neeche Edit button aata hai",
         parse_mode="Markdown"
     )
+
+
+# ── Full stock report ────────────────────────────────────────────
+async def full_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await context.bot.send_chat_action(chat_id=update.message.chat_id, action="typing")
+    products = get_full_stock()
+
+    if not products:
+        await update.message.reply_text("❌ Stock sheet nahi mili ya empty hai.")
+        return
+
+    # Group by section
+    sections = {}
+    for p in products:
+        sections.setdefault(p["section"], []).append(p)
+
+    SECTION_ICONS = {
+        "Solar Panel": "☀️", "Inverter": "⚡", "ACDB/DCDB": "🔌",
+        "Cable": "🔗", "PVC Material": "🧱", "Structure": "🏗️", "General": "📦"
+    }
+
+    total_products = len(products)
+    in_stock = sum(1 for p in products if p["quantity"] > 0)
+    out_stock = total_products - in_stock
+
+    messages = []
+    current_msg = f"📊 *FULL STOCK REPORT*\n_{total_products} products | ✅ {in_stock} in stock | ❌ {out_stock} out_\n"
+
+    for section, items in sections.items():
+        icon = SECTION_ICONS.get(section, "📦")
+        block = f"\n{icon} *{section.upper()}*\n"
+        for p in items:
+            name = " ".join(filter(None, [p["brand"], p["spec"], p["type"]]))
+            qty  = p["quantity"]
+            unit = p["unit"]
+            if qty == 0:
+                status = "❌"
+            elif qty < 5:
+                status = "⚠️"
+            else:
+                status = "✅"
+            block += f"{status} {name}: *{qty} {unit}*\n"
+
+        # Telegram message limit ~4096 chars — split if needed
+        if len(current_msg) + len(block) > 3800:
+            messages.append(current_msg)
+            current_msg = block
+        else:
+            current_msg += block
+
+    messages.append(current_msg)
+
+    for msg in messages:
+        await update.message.reply_text(msg, parse_mode="Markdown")
 
 
 # ── Main message handler ─────────────────────────────────────────
@@ -739,6 +793,7 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("stock", full_stock))
     async def add_cmd(update, context):
         text = (update.message.text or "").strip()
         args = text[4:].strip() if text.lower().startswith("/add") else ""

@@ -503,6 +503,51 @@ def add_new_product(category: str, brand: str, spec: str, type_: str, operator: 
             "category": target_cat, "unit": unit, "row": target_row, "quantity": qty}
 
 
+def get_full_stock() -> list:
+    """
+    Returns all product rows grouped by section.
+    Each entry: {section, brand, spec, type, quantity, unit, status}
+    """
+    ws = _get_sheet("Stock")
+    if not ws:
+        return []
+
+    all_rows = ws.get_all_values()
+    current_section = "General"
+    results = []
+
+    for row in all_rows:
+        col_a = str(row[0]).strip()
+        col_b = str(row[1]).strip() if len(row) > 1 else ""
+        combined = (col_a + " " + col_b).lower()
+
+        # Detect section header (non-digit col A with meaningful content)
+        if not col_a.isdigit() and col_b:
+            for sec in ["Solar Panel", "Inverter", "ACDB/DCDB", "Cable", "PVC Material", "Structure"]:
+                if sec.lower() in combined:
+                    current_section = sec
+                    break
+            continue
+
+        if not _is_product_row(row):
+            continue
+
+        qty_raw = str(row[4]).strip() if len(row) > 4 else "0"
+        qty = int(qty_raw) if qty_raw.isdigit() else 0
+        unit = str(row[8]).strip() if len(row) > 8 and row[8] else "nos"
+
+        results.append({
+            "section":  current_section,
+            "brand":    col_b,
+            "spec":     str(row[2]).strip() if len(row) > 2 else "",
+            "type":     str(row[3]).strip() if len(row) > 3 else "",
+            "quantity": qty,
+            "unit":     unit,
+        })
+
+    return results
+
+
 def get_party_summary(party_name: str) -> dict:
     """
     Returns all transactions for a party (fuzzy name match).
