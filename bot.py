@@ -358,8 +358,12 @@ ADD_HELP = (
 )
 
 
-async def _handle_add_product(update, parsed, sender, context):
-    msg = update.message
+async def _handle_add_product(update_or_query, parsed, sender, context):
+    # Works with both Update objects and CallbackQuery objects
+    if hasattr(update_or_query, "message") and update_or_query.message:
+        msg = update_or_query.message
+    else:
+        msg = update_or_query  # it's a CallbackQuery — use .reply_text directly
     items = parsed.get("items", [])
 
     # No items parsed — show help
@@ -403,14 +407,6 @@ async def _suggest_products(update, context, failed_item: dict, action_context: 
     if not suggestions:
         suggestions = get_all_products_by_brand(failed_item["brand"])
 
-    if not suggestions:
-        await update.message.reply_text(
-            f"❌ *{failed_item['brand']}* ka koi bhi product sheet mein nahi mila.\n"
-            "Pehle `naya product` se add karo.",
-            parse_mode="Markdown"
-        )
-        return
-
     # Store pending action so callback can execute it
     context.chat_data["pending_action"] = {
         "action_context": action_context,   # intent, vehicle_no, party, sender, other items
@@ -421,12 +417,19 @@ async def _suggest_products(update, context, failed_item: dict, action_context: 
     for i, s in enumerate(suggestions):
         label = f"{s['brand']} {s['spec']} {s['type']} (stock: {s['quantity']})"
         buttons.append([InlineKeyboardButton(label, callback_data=f"pick_{i}")])
+    buttons.append([InlineKeyboardButton("➕ Naya product add karo", callback_data="pick_new")])
     buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="pick_cancel")])
 
     context.chat_data["suggestions"] = suggestions
+    brand_disp = failed_item['brand']
+    spec_disp  = failed_item.get('spec', '')
+    not_found_line = f"❓ *'{brand_disp} {spec_disp}'.strip()* exactly nahi mila.\n\n"
+    if suggestions:
+        msg = f"❓ *'{brand_disp} {spec_disp}'* exactly nahi mila.\n\nKya in mein se koi hai?"
+    else:
+        msg = f"❓ *'{brand_disp}'* sheet mein nahi mila.\n\nNaya product add karna hai?"
     await update.message.reply_text(
-        f"❓ *'{failed_item['brand']} {failed_item['spec']}'* exactly nahi mila.\n\n"
-        "Kya in mein se koi hai?",
+        msg,
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
@@ -441,6 +444,38 @@ async def product_pick_callback(update, context):
         context.chat_data.pop("pending_action", None)
         context.chat_data.pop("suggestions", None)
         await query.message.reply_text("❌ Cancelled.")
+        return
+
+    if data == "pick_new":
+        pending       = context.chat_data.pop("pending_action", {})
+        failed_item   = pending.get("failed_item", {})
+        action_ctx    = pending.get("action_context", {})
+        context.chat_data.pop("suggestions", None)
+        # Build a minimal add_product parsed dict from the failed item
+        brand    = failed_item.get("brand", "")
+        spec     = failed_item.get("spec", "")
+        type_    = failed_item.get("type", "")
+        qty      = int(failed_item.get("quantity", 0))
+        # Guess category from type / action context
+        cat_hint = ""
+        for kw, cat in [("DCR","Solar Panel"),("N-DCR","Solar Panel"),
+                         ("1P","Inverter"),("3P","Inverter"),
+                         ("ACDB","ACDB/DCDB"),("DCDB","ACDB/DCDB")]:
+            if kw.lower() in type_.lower() or kw.lower() in spec.lower():
+                cat_hint = cat; break
+        if not cat_hint:
+            cat_hint = "Solar Panel"  # default — user can redo with full message
+        unit = UNIT_MAP.get(cat_hint.lower(), "nos")
+        mini_parsed = {"intent": "add_product", "items": [{
+            "category": cat_hint, "brand": brand, "spec": spec,
+            "type": type_, "unit": unit, "quantity": qty
+        }]}
+        sender = action_ctx.get("sender", query.from_user.first_name or "Unknown")
+        await query.message.reply_text(
+            f"➕ *{brand} {spec} {type_}* ko naya product ki tarah add kar raha hoon...",
+            parse_mode="Markdown"
+        )
+        await _handle_add_product(query, mini_parsed, sender, context)
         return
 
     idx = int(data.split("_")[1])

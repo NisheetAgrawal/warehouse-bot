@@ -8,10 +8,18 @@ INTENT TYPES:
 - check_stock: user wants current quantity
 - add_stock: goods arrived, increase quantity
 - ship_out: truck loading out, decrease quantity, generate receipt
-- add_product: new product to be added
+- add_product: new product to be added to the product list
 - update_rate: user wants to set/update the price/rate of a product
 - party_history: user asks about transactions with a specific party/supplier/customer
 - unknown: cannot understand
+
+CRITICAL INTENT RULE — READ FIRST:
+- If the message contains "naya product", "nayi entry", "new product", "add karo", "add krdo", "add karna", "product add", "nayi cheez" → intent MUST be "add_product"
+- This rule overrides any "aya", "aaya", "se aya", "aa gaya" supplier cues in the SAME message
+- Example: "naya product SOLFLIP ACDB 1-6KW add karo SPLFLIP se aya 10 pcs" → add_product (NOT add_stock)
+- Example: "ACDB 1-6KW SOLFLIP naya hai add krdo" → add_product
+- Example: "NAYA PRODUCT SOLFLIP ACDB ME ADD KRO ACDB 1-6 KW 10 PCS SPLFLIP SOLUTION AYA" → add_product, category="ACDB/DCDB", brand="Solflip", spec="1-6KW", type="ACDB", quantity=10
+- For add_product: if quantity is mentioned (e.g. "10 pcs"), set quantity field. Ignore supplier name.
 
 BRAND ALIASES (normalize to standard spelling):
 waaree/waree/waaare/waari → Waaree
@@ -82,9 +90,10 @@ add_product RULES:
 - category must be one of: Solar Panel, Inverter, Cable, ACDB/DCDB, PVC Material, Structure
 - unit: "nos" for panels/inverters/ACDB/DCDB, "meters" for cables, "pcs" for PVC Material and Structure
 - quantity: extract if mentioned (e.g. "20 mtrs", "5 pcs", "50 nos"), else 0
-- spec = ALL size/dimension info combined (e.g. "150X50 20ft", "25mm", "3kw")
-- type = DCR/N-DCR for panels, 1P/3P for inverters, blank for cables/PVC/Structure
+- spec = ALL size/dimension info combined (e.g. "150X50 20ft", "25mm", "3kw", "1-6KW")
+- type = DCR/N-DCR for panels, 1P/3P for inverters, ACDB or DCDB for ACDB/DCDB category, blank for cables/PVC/Structure
 - For PVC/Structure: brand = full product name (e.g. "GP C Channel", "25mm UPVC", "Angle")
+- For ACDB/DCDB: brand = the company/manufacturer name, spec = kw range (e.g. "1-6KW"), type = phase info (e.g. "1P Premium")
 
 Examples:
 - "GP C Channel 150X50 20ft structure me add karo 5 pcs" → category="Structure", brand="GP C Channel", spec="150X50 20ft", unit="pcs", quantity=5
@@ -92,6 +101,8 @@ Examples:
 - "Polycab DC cable add karo" → category="Cable", brand="Polycab", spec="DC", unit="meters"
 - "GP C Channel 150X50 20 mtrs PVC" → category="PVC Material", brand="GP C Channel", spec="150X50", unit="meters", quantity=20
 - "structure me angle iron 40X40 add karo 10 pcs" → category="Structure", brand="Angle Iron", spec="40X40", unit="pcs", quantity=10
+- "NAYA PRODUCT SOLFLIP ACDB ME ADD KRO ACDB 1-6 KW 10 PCS SPLFLIP SOLUTION AYA" → category="ACDB/DCDB", brand="Solflip", spec="1-6KW", type="ACDB", unit="nos", quantity=10
+- "naya brand XYZ ka DCDB 3KW 3P add karo" → category="ACDB/DCDB", brand="XYZ", spec="3KW", type="DCDB 3P", unit="nos"
 
 CRITICAL: "structure", "mounting", "hardware" → category="Structure" (NOT PVC Material)
 
