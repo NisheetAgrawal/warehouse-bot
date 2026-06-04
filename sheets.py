@@ -58,6 +58,11 @@ CATEGORY_HEADERS = {
     "cable":       "Cable",
     "cables":      "Cable",
     "wire":        "Cable",
+    "pvc":         "PVC Material",
+    "pvc material":"PVC Material",
+    "structure":   "Structure",
+    "mounting":    "Structure",
+    "hardware":    "Structure",
 }
 
 def _get_or_create_transactions_sheet():
@@ -438,39 +443,59 @@ def add_new_product(category: str, brand: str, spec: str, type_: str, operator: 
                 target_row = i + 2
                 break
 
-    # Write data directly to target row
+    # Count existing product rows in section to assign Sr.No
+    sr_no = 1
+    if section_end is not None:
+        in_sec = False
+        for row in all_rows:
+            combined = (str(row[0]) + " " + (str(row[1]) if len(row) > 1 else "")).lower()
+            if target_cat.lower() in combined and not str(row[0]).strip().isdigit():
+                in_sec = True
+                sr_no  = 1
+                continue
+            if in_sec and _is_product_row(row):
+                sr_no += 1
+
     qty    = init_qty if init_qty > 0 else 0
-    status = "✅ In Stock" if qty > 0 else "⚪ No Stock"
-    new_row = ["", brand, spec, type_, qty, "", "", status, unit]
+    status = "In Stock" if qty > 0 else "No Stock"
+    new_row = [sr_no, brand, spec, type_, qty, "", "", status, unit]
     ws.update(f"A{target_row}:I{target_row}", [new_row])
 
-    # Copy formatting from the row above so new row looks like part of the table
+    # Copy formatting from the nearest PRODUCT row above (skip headers)
     try:
         from config import GOOGLE_SHEET_ID
         spreadsheet = _client().open_by_key(GOOGLE_SHEET_ID)
         sheet_id = ws.id
-        copy_from = target_row - 1
-        spreadsheet.batch_update({"requests": [{
-            "copyPaste": {
-                "source": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": copy_from - 1,
-                    "endRowIndex": copy_from,
-                    "startColumnIndex": 0,
-                    "endColumnIndex": 9
-                },
-                "destination": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": target_row - 1,
-                    "endRowIndex": target_row,
-                    "startColumnIndex": 0,
-                    "endColumnIndex": 9
-                },
-                "pasteType": "PASTE_FORMAT"
-            }
-        }]})
-        # Re-write data after format copy (format paste may clear values)
-        ws.update(f"A{target_row}:I{target_row}", [new_row])
+
+        # Find nearest product row above target (col A is a digit)
+        copy_from = None
+        for i in range(target_row - 2, -1, -1):
+            if i < len(all_rows) and str(all_rows[i][0]).strip().isdigit():
+                copy_from = i + 1  # 1-based
+                break
+
+        if copy_from:
+            spreadsheet.batch_update({"requests": [{
+                "copyPaste": {
+                    "source": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": copy_from - 1,
+                        "endRowIndex": copy_from,
+                        "startColumnIndex": 0,
+                        "endColumnIndex": 9
+                    },
+                    "destination": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": target_row - 1,
+                        "endRowIndex": target_row,
+                        "startColumnIndex": 0,
+                        "endColumnIndex": 9
+                    },
+                    "pasteType": "PASTE_FORMAT"
+                }
+            }]})
+            # Re-write data after format copy
+            ws.update(f"A{target_row}:I{target_row}", [new_row])
     except Exception as e:
         logger.warning(f"Format copy failed (non-critical): {e}")
 
