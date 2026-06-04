@@ -265,6 +265,7 @@ UNIT_MAP = {
     "solar panel": "nos", "inverter": "nos", "acdb/dcdb": "nos",
     "acdb": "nos", "dcdb": "nos",
     "cable": "meters", "pvc material": "pcs", "pvc": "pcs",
+    "structure": "pcs", "mounting": "pcs", "hardware": "pcs",
 }
 
 CAT_ALIASES = {

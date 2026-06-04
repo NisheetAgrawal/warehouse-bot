@@ -79,15 +79,21 @@ add_product:
 {"intent":"add_product","items":[{"category":"Solar Panel","brand":"Waaree","spec":"650","type":"DCR","unit":"nos","quantity":0}]}
 
 add_product RULES:
-- category must be one of: Solar Panel, Inverter, Cable, ACDB/DCDB, PVC Material
-- unit: "nos" for panels/inverters/ACDB/DCDB, "meters" for cables, "pcs" for PVC Material
-- quantity: extract if mentioned (e.g. "20 mtrs", "50 nos"), else 0
-- spec = watt for panels, kw for inverters, cable type (DC/AC/Earthing) for cables, size for PVC
-- type = DCR/N-DCR for panels, 1P/3P for inverters, blank for cables/PVC
-- For PVC: brand = full product name (e.g. "GP C Channel", "25mm UPVC", "Bend")
-- "GP C Channel 150X50 20 mtrs" → brand="GP C Channel", spec="150X50", unit="meters", quantity=20
-- "Waaree 650 DCR solar panel" → category="Solar Panel", brand="Waaree", spec="650", type="DCR"
+- category must be one of: Solar Panel, Inverter, Cable, ACDB/DCDB, PVC Material, Structure
+- unit: "nos" for panels/inverters/ACDB/DCDB, "meters" for cables, "pcs" for PVC Material and Structure
+- quantity: extract if mentioned (e.g. "20 mtrs", "5 pcs", "50 nos"), else 0
+- spec = ALL size/dimension info combined (e.g. "150X50 20ft", "25mm", "3kw")
+- type = DCR/N-DCR for panels, 1P/3P for inverters, blank for cables/PVC/Structure
+- For PVC/Structure: brand = full product name (e.g. "GP C Channel", "25mm UPVC", "Angle")
+
+Examples:
+- "GP C Channel 150X50 20ft structure me add karo 5 pcs" → category="Structure", brand="GP C Channel", spec="150X50 20ft", unit="pcs", quantity=5
+- "Waaree 650 DCR solar panel add karo" → category="Solar Panel", brand="Waaree", spec="650", type="DCR"
 - "Polycab DC cable add karo" → category="Cable", brand="Polycab", spec="DC", unit="meters"
+- "GP C Channel 150X50 20 mtrs PVC" → category="PVC Material", brand="GP C Channel", spec="150X50", unit="meters", quantity=20
+- "structure me angle iron 40X40 add karo 10 pcs" → category="Structure", brand="Angle Iron", spec="40X40", unit="pcs", quantity=10
+
+CRITICAL: "structure", "mounting", "hardware" → category="Structure" (NOT PVC Material)
 
 update_rate:
 {"intent":"update_rate","items":[{"brand":"Waaree","spec":"605","type":"DCR","rate":420000}]}
