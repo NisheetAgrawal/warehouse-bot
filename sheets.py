@@ -158,25 +158,53 @@ def find_product_row(brand: str, spec: str, type_: str):
     """
     Find a product row in Sheet1.
     Returns (row_index_1based, row_data) or (None, None)
+
+    Smart fallback: if brand contains 'acdb' or 'dcdb' mixed with a manufacturer
+    name (e.g. 'Polycab ACDB'), also tries searching with just 'ACDB'/'DCDB'.
     """
     ws = _get_sheet("Stock")
     if not ws:
         return None, None
 
     all_rows = ws.get_all_values()
-    brand_norm = _normalize(brand)
 
-    for i, row in enumerate(all_rows):
-        if not _is_product_row(row):
-            continue
-        row_brand = _normalize(row[1])
-        # Allow partial match: "waaree" matches "waaree solar" etc
-        if brand_norm not in row_brand and row_brand not in brand_norm:
-            continue
-        row_spec = str(row[2]).strip() if len(row) > 2 else ""
-        row_type = str(row[3]).strip() if len(row) > 3 else ""
-        if _specs_match(row_spec, row_type, spec, type_):
-            return i + 1, row  # 1-based index
+    def _search(brand_q):
+        brand_q_norm = _normalize(brand_q)
+        for i, row in enumerate(all_rows):
+            if not _is_product_row(row):
+                continue
+            row_brand = _normalize(row[1])
+            if brand_q_norm not in row_brand and row_brand not in brand_q_norm:
+                continue
+            row_spec = str(row[2]).strip() if len(row) > 2 else ""
+            row_type = str(row[3]).strip() if len(row) > 3 else ""
+            if _specs_match(row_spec, row_type, spec, type_):
+                return i + 1, row
+        return None, None
+
+    # Primary search
+    row_idx, row = _search(brand)
+    if row_idx:
+        return row_idx, row
+
+    # Fallback: if brand has both a manufacturer AND "acdb"/"dcdb",
+    # retry with just the product type (e.g. "Polycab ACDB" → "ACDB")
+    brand_lower = brand.lower()
+    for keyword in ["acdb", "dcdb"]:
+        if keyword in brand_lower and brand_lower != keyword:
+            row_idx, row = _search(keyword.upper())
+            if row_idx:
+                return row_idx, row
+
+    # Fallback: if brand is a manufacturer name (Polycab/Waaree etc.) but
+    # spec contains "acdb" or "dcdb", try brand="ACDB"/"DCDB" with remaining spec
+    spec_lower = spec.lower()
+    for keyword in ["acdb", "dcdb"]:
+        if keyword in spec_lower:
+            clean_spec = spec_lower.replace(keyword, "").strip()
+            row_idx, row = _search(keyword.upper())
+            if row_idx:
+                return row_idx, row
 
     return None, None
 
@@ -225,7 +253,11 @@ def search_similar_products(brand: str, spec: str, type_: str, top_n: int = 4) -
         row_type  = _normalize(str(row[3])).replace("-", "")
 
         # Brand score — DOMINANT: if brand doesn't match at all, skip row
-        if brand_q in row_brand or row_brand in brand_q:
+        # Special case: "Polycab ACDB" should match rows with brand="ACDB"
+        acdb_fallback = any(kw in brand_q for kw in ["acdb", "dcdb"]) and (
+            "acdb" in row_brand or "dcdb" in row_brand
+        )
+        if brand_q in row_brand or row_brand in brand_q or acdb_fallback:
             brand_score = 10
         else:
             continue   # Wrong brand → never suggest
