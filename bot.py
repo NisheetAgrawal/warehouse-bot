@@ -266,24 +266,19 @@ async def _execute_ship_out(update_or_query, context, items, vehicle_no, party, 
 
 # ── Add new product — form-based flow ───────────────────────────
 PRODUCT_FORM_TEMPLATE = """\
-📋 *Naya Product Form*
-Neeche ki details fill karke _isi message ko edit karke_ reply karo:
+📋 *Naya Product — Form*
 
-```
-Category:
-Brand:
-Spec:
-Type:
-Unit:
-```
+Neeche wala text *copy karo*, fields fill karo, aur *reply karo*:
 
-*Category options:*  Solar Panel · Inverter · ACDB/DCDB · Cable · PVC Material
-*Unit options:*  nos · meters · pcs
-*Type examples:*
-  • Panel → DCR · N-DCR
-  • Inverter → 1P · 3P
-  • Cable → AC 4SX2C · DC · Earthing
-  • ACDB/DCDB → 1P Premium · 3P · etc.\
+`Category: `
+`Brand: `
+`Spec: `
+`Type: `
+`Unit: `
+
+*Category:* Solar Panel · Inverter · ACDB/DCDB · Cable · PVC Material
+*Unit:* nos · meters · pcs
+*Type:* Panel→DCR/N\-DCR · Inverter→1P/3P · Cable→DC/AC 4SX2C/Earthing\
 """
 
 async def _handle_add_product(update, parsed, sender, context):
