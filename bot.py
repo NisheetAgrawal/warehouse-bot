@@ -292,80 +292,48 @@ ADD_HELP = (
 )
 
 
+ADD_HELP = (
+    "🆕 *Naya product add karo — bas likhdo:*\n\n"
+    "☀️ `Waaree 650 DCR solar panel add karo`\n"
+    "⚡ `Polycab 5kw 3P inverter naya hai`\n"
+    "🔗 `Easyone DC cable add karo`\n"
+    "🔌 `ACDB 1-6KW 1P Premium add karo`\n"
+    "🧱 `GP C Channel 150X50 20 mtrs PVC add`\n\n"
+    "_Bot khud samajh lega category, unit, quantity sab._"
+)
+
+
 async def _handle_add_product(update, parsed, sender, context):
-    """Entry: show help if no args, else parse and add."""
     msg = update.message
-    text = msg.text.strip() if msg.text else ""
+    items = parsed.get("items", [])
 
-    # Strip /add prefix if present
-    for prefix in ("/add ", "/add\n"):
-        if text.lower().startswith(prefix):
-            text = text[len(prefix):]
-            break
-    else:
-        if text.lower() == "/add":
-            text = ""
-
-    if not text or text.lower() in ("naya product", "add product", "add new product", "new product"):
+    # No items parsed — show help
+    if not items:
         await msg.reply_text(ADD_HELP, parse_mode="Markdown")
         return
 
-    await _parse_and_add_product(msg, text, sender)
+    lines = []
+    for item in items:
+        category = item.get("category", "")
+        brand    = item.get("brand", "")
+        spec     = item.get("spec", "")
+        type_    = item.get("type", "")
+        unit     = item.get("unit", UNIT_MAP.get(category.lower(), "nos"))
+        init_qty = int(item.get("quantity", 0))
 
+        if not brand or not category:
+            lines.append("❌ Category aur brand zaroori hai.")
+            continue
 
-async def _parse_and_add_product(msg, text: str, sender: str):
-    """Parse 'category, brand, spec, type' and add product."""
-    parts = [p.strip() for p in text.split(",")]
-    if len(parts) < 2:
-        await msg.reply_text(
-            "❌ Format galat hai.\nExample: `/add solar, Waaree, 650, DCR`",
-            parse_mode="Markdown"
-        )
-        return
+        result = add_new_product(category, brand, spec, type_, sender, unit, init_qty)
+        if result["success"]:
+            preview  = " ".join(filter(None, [brand, spec, type_]))
+            qty_line = f"📦 {init_qty} {unit}" if init_qty > 0 else "Qty 0 — update karo jab maal aaye"
+            lines.append(f"✅ *{preview}*\n📁 {category} | {qty_line}")
+        else:
+            lines.append(f"❌ {result.get('error', 'Error')}")
 
-    import re as _re
-    cat_raw  = parts[0].lower()
-    brand    = parts[1] if len(parts) > 1 else ""
-    spec     = parts[2] if len(parts) > 2 else ""
-    type_    = parts[3] if len(parts) > 3 else ""
-    category = CAT_ALIASES.get(cat_raw, parts[0].title())
-    unit     = UNIT_MAP.get(cat_raw, "nos")
-    init_qty = 0
-
-    # Parse quantity + unit from ANY field that looks like "20 meters", "50 nos", "100 pcs"
-    qty_unit_pattern = _re.compile(r'^(\d+)\s*(meters?|mtr|pcs?|nos?)?$', _re.I)
-    for field_idx in (3, 4):
-        if field_idx < len(parts):
-            m = qty_unit_pattern.match(parts[field_idx].strip())
-            if m:
-                init_qty = int(m.group(1))
-                if m.group(2):
-                    raw_u = m.group(2).lower()
-                    unit = "meters" if raw_u.startswith("m") else ("pcs" if raw_u.startswith("p") else "nos")
-                if field_idx == 3:
-                    type_ = ""   # was misread as type
-                break
-
-    # For PVC: explicit unit word in type field
-    if cat_raw in ("pvc", "pvc material") and type_.lower() in ("meters", "pcs", "nos", "mtr"):
-        unit  = "meters" if type_.lower() in ("meters", "mtr") else type_.lower()
-        type_ = ""
-
-    if not brand:
-        await msg.reply_text("❌ Brand missing.\nExample: `/add solar, Waaree, 650, DCR`", parse_mode="Markdown")
-        return
-
-    result = add_new_product(category, brand, spec, type_, sender, unit, init_qty)
-    if result["success"]:
-        preview = " ".join(filter(None, [brand, spec, type_]))
-        qty_line = f"📦 Qty: *{init_qty} {unit}*" if init_qty > 0 else "_Quantity 0 — jab maal aaye tab update karo._"
-        await msg.reply_text(
-            f"✅ *{preview}* add ho gaya!\n"
-            f"📁 {category}  |  {qty_line}",
-            parse_mode="Markdown"
-        )
-    else:
-        await msg.reply_text(f"❌ {result.get('error', 'Error')}")
+    await msg.reply_text("\n\n".join(lines), parse_mode="Markdown")
 
 
 # ── Product suggestion helpers ───────────────────────────────────
@@ -770,7 +738,18 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("add", lambda u, c: _handle_add_product(u, {}, u.effective_user.first_name, c)))
+    async def add_cmd(update, context):
+        text = (update.message.text or "").strip()
+        args = text[4:].strip() if text.lower().startswith("/add") else ""
+        if not args:
+            await _handle_add_product(update, {}, update.effective_user.first_name, context)
+            return
+        parsed = parse_message(args, update.effective_user.first_name)
+        if parsed.get("intent") != "add_product":
+            # Re-parse with explicit "naya product:" prefix to guide Groq
+            parsed = parse_message(f"naya product: {args}", update.effective_user.first_name)
+        await _handle_add_product(update, parsed, update.effective_user.first_name, context)
+    app.add_handler(CommandHandler("add", add_cmd))
     app.add_handler(CallbackQueryHandler(edit_challan_callback, pattern="^edit_challan$"))
     app.add_handler(CallbackQueryHandler(product_pick_callback, pattern="^pick_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

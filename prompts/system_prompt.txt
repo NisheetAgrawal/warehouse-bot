@@ -76,8 +76,18 @@ ship_out:
 {"intent":"ship_out","vehicle_no":"HR55AB1234","party":"Shyam Solar","operator":null,"items":[{"brand":"Waaree","spec":"575","type":"DCR","quantity":20},{"brand":"Polycab","spec":"5kw","type":"3P","quantity":5}]}
 
 add_product:
-{"intent":"add_product","items":[{"category":"Solar Panel","brand":"Waaree","spec":"650","type":"DCR"}]}
-Category must be one of: Solar Panel, Inverter, Cable, ACDB/DCDB
+{"intent":"add_product","items":[{"category":"Solar Panel","brand":"Waaree","spec":"650","type":"DCR","unit":"nos","quantity":0}]}
+
+add_product RULES:
+- category must be one of: Solar Panel, Inverter, Cable, ACDB/DCDB, PVC Material
+- unit: "nos" for panels/inverters/ACDB/DCDB, "meters" for cables, "pcs" for PVC Material
+- quantity: extract if mentioned (e.g. "20 mtrs", "50 nos"), else 0
+- spec = watt for panels, kw for inverters, cable type (DC/AC/Earthing) for cables, size for PVC
+- type = DCR/N-DCR for panels, 1P/3P for inverters, blank for cables/PVC
+- For PVC: brand = full product name (e.g. "GP C Channel", "25mm UPVC", "Bend")
+- "GP C Channel 150X50 20 mtrs" → brand="GP C Channel", spec="150X50", unit="meters", quantity=20
+- "Waaree 650 DCR solar panel" → category="Solar Panel", brand="Waaree", spec="650", type="DCR"
+- "Polycab DC cable add karo" → category="Cable", brand="Polycab", spec="DC", unit="meters"
 
 update_rate:
 {"intent":"update_rate","items":[{"brand":"Waaree","spec":"605","type":"DCR","rate":420000}]}
