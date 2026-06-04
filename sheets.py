@@ -375,7 +375,7 @@ def deduct_stock(brand: str, spec: str, type_: str, quantity: int,
     }
 
 
-def add_new_product(category: str, brand: str, spec: str, type_: str, operator: str, unit: str = "nos") -> dict:
+def add_new_product(category: str, brand: str, spec: str, type_: str, operator: str, unit: str = "nos", init_qty: int = 0) -> dict:
     ws = _get_sheet("Stock")
     if not ws:
         return {"success": False, "error": "Stock sheet nahi mili"}
@@ -438,12 +438,44 @@ def add_new_product(category: str, brand: str, spec: str, type_: str, operator: 
                 target_row = i + 2
                 break
 
-    # Write directly to specific cells — avoids merged-cell insert_row bugs
-    new_row = ["", brand, spec, type_, 0, "", "", "⚪ No Stock", unit]
+    # Write data directly to target row
+    qty    = init_qty if init_qty > 0 else 0
+    status = "✅ In Stock" if qty > 0 else "⚪ No Stock"
+    new_row = ["", brand, spec, type_, qty, "", "", status, unit]
     ws.update(f"A{target_row}:I{target_row}", [new_row])
 
+    # Copy formatting from the row above so new row looks like part of the table
+    try:
+        from config import GOOGLE_SHEET_ID
+        spreadsheet = _client().open_by_key(GOOGLE_SHEET_ID)
+        sheet_id = ws.id
+        copy_from = target_row - 1
+        spreadsheet.batch_update({"requests": [{
+            "copyPaste": {
+                "source": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": copy_from - 1,
+                    "endRowIndex": copy_from,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": 9
+                },
+                "destination": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": target_row - 1,
+                    "endRowIndex": target_row,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": 9
+                },
+                "pasteType": "PASTE_FORMAT"
+            }
+        }]})
+        # Re-write data after format copy (format paste may clear values)
+        ws.update(f"A{target_row}:I{target_row}", [new_row])
+    except Exception as e:
+        logger.warning(f"Format copy failed (non-critical): {e}")
+
     return {"success": True, "brand": brand, "spec": spec, "type": type_,
-            "category": target_cat, "unit": unit, "row": target_row}
+            "category": target_cat, "unit": unit, "row": target_row, "quantity": qty}
 
 
 def get_party_summary(party_name: str) -> dict:

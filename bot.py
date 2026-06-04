@@ -323,14 +323,30 @@ async def _parse_and_add_product(msg, text: str, sender: str):
         )
         return
 
+    import re as _re
     cat_raw  = parts[0].lower()
     brand    = parts[1] if len(parts) > 1 else ""
     spec     = parts[2] if len(parts) > 2 else ""
     type_    = parts[3] if len(parts) > 3 else ""
     category = CAT_ALIASES.get(cat_raw, parts[0].title())
     unit     = UNIT_MAP.get(cat_raw, "nos")
+    init_qty = 0
 
-    # For PVC/hardware: 4th field can be unit override (meters/pcs/nos) instead of type
+    # Parse quantity + unit from ANY field that looks like "20 meters", "50 nos", "100 pcs"
+    qty_unit_pattern = _re.compile(r'^(\d+)\s*(meters?|mtr|pcs?|nos?)?$', _re.I)
+    for field_idx in (3, 4):
+        if field_idx < len(parts):
+            m = qty_unit_pattern.match(parts[field_idx].strip())
+            if m:
+                init_qty = int(m.group(1))
+                if m.group(2):
+                    raw_u = m.group(2).lower()
+                    unit = "meters" if raw_u.startswith("m") else ("pcs" if raw_u.startswith("p") else "nos")
+                if field_idx == 3:
+                    type_ = ""   # was misread as type
+                break
+
+    # For PVC: explicit unit word in type field
     if cat_raw in ("pvc", "pvc material") and type_.lower() in ("meters", "pcs", "nos", "mtr"):
         unit  = "meters" if type_.lower() in ("meters", "mtr") else type_.lower()
         type_ = ""
@@ -339,13 +355,13 @@ async def _parse_and_add_product(msg, text: str, sender: str):
         await msg.reply_text("❌ Brand missing.\nExample: `/add solar, Waaree, 650, DCR`", parse_mode="Markdown")
         return
 
-    result = add_new_product(category, brand, spec, type_, sender, unit)
+    result = add_new_product(category, brand, spec, type_, sender, unit, init_qty)
     if result["success"]:
         preview = " ".join(filter(None, [brand, spec, type_]))
+        qty_line = f"📦 Qty: *{init_qty} {unit}*" if init_qty > 0 else "_Quantity 0 — jab maal aaye tab update karo._"
         await msg.reply_text(
             f"✅ *{preview}* add ho gaya!\n"
-            f"📁 {category}  |  📦 {unit}\n"
-            "_Quantity 0 hai — jab maal aaye tab update karo._",
+            f"📁 {category}  |  {qty_line}",
             parse_mode="Markdown"
         )
     else:
