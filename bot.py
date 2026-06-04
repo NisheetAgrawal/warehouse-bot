@@ -4,10 +4,10 @@ import os
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
-    CallbackQueryHandler, filters, ContextTypes
+    CallbackQueryHandler, ConversationHandler, filters, ContextTypes
 )
 from dotenv import load_dotenv
 load_dotenv()
@@ -53,16 +53,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_edit_input(update, context, sender, chat_id)
         return
 
-    # Detect "add product" trigger phrases BEFORE sending to Groq
-    _lower = user_text.lower()
-    if any(kw in _lower for kw in ("naya product", "add product", "add new product", "new product", "naaya product")):
-        await _handle_add_product(update, {}, sender, context)
-        return
-
-    # Detect filled product form by content — works even after bot restart
-    if _is_product_form(user_text):
-        await _handle_product_form_reply(update, context, sender)
-        return
 
     parsed = parse_message(user_text, sender)
     intent = parsed.get("intent", "unknown")
@@ -265,77 +255,121 @@ async def _execute_ship_out(update_or_query, context, items, vehicle_no, party, 
 
 
 # ── Add new product — form-based flow ───────────────────────────
-PRODUCT_FORM_TEMPLATE = """\
-📋 *Naya Product — Form*
+# ── Add Product — Step-by-step conversation ──────────────────────
+AP_CATEGORY, AP_BRAND, AP_SPEC, AP_TYPE = range(4)
 
-Neeche wala text *copy karo*, fields fill karo, aur *reply karo*:
+CATEGORY_BUTTONS = [
+    [InlineKeyboardButton("☀️ Solar Panel",  callback_data="ap_cat:Solar Panel"),
+     InlineKeyboardButton("⚡ Inverter",      callback_data="ap_cat:Inverter")],
+    [InlineKeyboardButton("🔌 ACDB/DCDB",    callback_data="ap_cat:ACDB/DCDB"),
+     InlineKeyboardButton("🔗 Cable",         callback_data="ap_cat:Cable")],
+    [InlineKeyboardButton("🧱 PVC Material", callback_data="ap_cat:PVC Material")],
+    [InlineKeyboardButton("❌ Cancel",        callback_data="ap_cat:cancel")],
+]
 
-`Category: `
-`Brand: `
-`Spec: `
-`Type: `
-`Unit: `
+TYPE_BUTTONS = {
+    "Solar Panel":  [["DCR", "N-DCR"]],
+    "Inverter":     [["1P", "3P"]],
+    "Cable":        [["DC", "AC 4SX2C", "Earthing"]],
+    "ACDB/DCDB":    [["1P Premium", "1P Normal", "3P"], ["1 in 1 out", "2 in 2 out"]],
+    "PVC Material": [["(none)"]],
+}
 
-*Category:* Solar Panel · Inverter · ACDB/DCDB · Cable · PVC Material
-*Unit:* nos · meters · pcs
-*Type:* Panel→DCR/N\-DCR · Inverter→1P/3P · Cable→DC/AC 4SX2C/Earthing\
-"""
+UNIT_MAP = {
+    "Solar Panel": "nos", "Inverter": "nos", "ACDB/DCDB": "nos",
+    "Cable": "meters", "PVC Material": "pcs",
+}
+
 
 async def _handle_add_product(update, parsed, sender, context):
-    context.chat_data["awaiting_product_form"] = True
-    await update.message.reply_text(PRODUCT_FORM_TEMPLATE, parse_mode="Markdown")
+    msg = update.message
+    await msg.reply_text(
+        "🆕 *Naya Product — Step 1 of 4*\nCategory select karo:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(CATEGORY_BUTTONS)
+    )
+    return AP_CATEGORY
 
 
-def _is_product_form(text: str) -> bool:
-    """Detect if a message is a filled product form (has Category: and Brand: lines)."""
-    t = text.lower()
-    return "category:" in t and "brand:" in t
+async def ap_category_cb(update, context):
+    query = update.callback_query
+    await query.answer()
+    val = query.data.split(":", 1)[1]
+    if val == "cancel":
+        await query.message.reply_text("❌ Cancelled.")
+        return ConversationHandler.END
+    context.chat_data["ap"] = {"category": val, "unit": UNIT_MAP.get(val, "nos")}
+    await query.message.reply_text(
+        f"✅ Category: *{val}*\n\n"
+        "*Step 2 of 4* — Brand ka naam type karo:",
+        parse_mode="Markdown",
+        reply_markup=ForceReply(selective=True, input_field_placeholder="e.g. Waaree, Polycab, Havells...")
+    )
+    return AP_BRAND
 
 
-def _parse_product_form(text: str) -> dict:
-    """Parse key:value lines from the product form reply."""
-    result = {}
-    for line in text.splitlines():
-        if ":" not in line:
-            continue
-        key, _, val = line.partition(":")
-        key = key.strip().lower().replace(" ", "_").replace("/", "_")
-        val = val.strip()
-        if val:
-            result[key] = val
-    return result
+async def ap_brand_input(update, context):
+    context.chat_data["ap"]["brand"] = update.message.text.strip()
+    cat = context.chat_data["ap"]["category"]
+    await update.message.reply_text(
+        f"✅ Brand: *{context.chat_data['ap']['brand']}*\n\n"
+        "*Step 3 of 4* — Spec type karo:\n"
+        "_(Panels: 575 · Inverters: 3kw · Cables: — · PVC: 25mm)_\n"
+        "Spec nahi hai toh *-* bhejo.",
+        parse_mode="Markdown",
+        reply_markup=ForceReply(selective=True, input_field_placeholder="Spec or - for none...")
+    )
+    return AP_SPEC
 
 
-async def _handle_product_form_reply(update, context, sender):
-    context.chat_data.pop("awaiting_product_form", None)
-    text = update.message.text.strip()
-    data = _parse_product_form(text)
+async def ap_spec_input(update, context):
+    spec = update.message.text.strip()
+    context.chat_data["ap"]["spec"] = "" if spec == "-" else spec
+    cat = context.chat_data["ap"]["category"]
+    rows = TYPE_BUTTONS.get(cat, [["(none)"]])
+    buttons = [[InlineKeyboardButton(t, callback_data=f"ap_type:{t}") for t in row] for row in rows]
+    buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="ap_type:cancel")])
+    await update.message.reply_text(
+        f"✅ Spec: *{context.chat_data['ap']['spec'] or '—'}*\n\n"
+        "*Step 4 of 4* — Type select karo:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+    return AP_TYPE
 
-    category = data.get("category", "")
-    brand    = data.get("brand", "")
-    spec     = data.get("spec", "")
-    type_    = data.get("type", "")
-    unit     = data.get("unit", "nos")
 
-    if not brand or not category:
-        await update.message.reply_text(
-            "❌ *Brand* aur *Category* zaroori hai.\n"
-            "Dobara `/add` bhejo aur form dobara fill karo.",
-            parse_mode="Markdown"
-        )
-        return
-
-    result = add_new_product(category, brand, spec, type_, sender, unit)
+async def ap_type_cb(update, context):
+    query = update.callback_query
+    await query.answer()
+    val = query.data.split(":", 1)[1]
+    if val == "cancel":
+        context.chat_data.pop("ap", None)
+        await query.message.reply_text("❌ Cancelled.")
+        return ConversationHandler.END
+    ap = context.chat_data.pop("ap", {})
+    ap["type"] = "" if val == "(none)" else val
+    sender = query.from_user.first_name
+    result = add_new_product(ap["category"], ap["brand"], ap["spec"], ap["type"], sender, ap["unit"])
     if result["success"]:
-        await update.message.reply_text(
-            f"✅ *{brand} {spec} {type_}* add ho gaya!\n"
-            f"📁 Category: {result.get('category', category)}\n"
-            f"📦 Unit: *{unit}*\n"
-            f"Quantity abhi 0 hai — jab maal aaye tab update karo.",
+        await query.message.reply_text(
+            f"✅ *{ap['brand']} {ap['spec']} {ap['type']}* add ho gaya!\n"
+            f"📁 Category: *{ap['category']}*  |  📦 Unit: *{ap['unit']}*\n"
+            "_Quantity 0 hai — jab maal aaye tab update karo._",
             parse_mode="Markdown"
         )
     else:
-        await update.message.reply_text(f"❌ {result.get('error', 'Error')}")
+        await query.message.reply_text(f"❌ {result.get('error', 'Error')}")
+    return ConversationHandler.END
+
+
+async def ap_cancel(update, context):
+    context.chat_data.pop("ap", None)
+    await update.message.reply_text("❌ Cancelled.")
+    return ConversationHandler.END
+
+
+def _is_product_form(text): return False
+async def _handle_product_form_reply(update, context, sender): pass
 
 
 # ── Product suggestion helpers ───────────────────────────────────
@@ -738,9 +772,25 @@ def main():
     port = int(os.environ.get("PORT", 8080))
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    # Add product conversation handler — must be registered FIRST
+    add_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("add", lambda u, c: _handle_add_product(u, {}, u.from_user.first_name if hasattr(u, 'from_user') else "", c)),
+            MessageHandler(filters.Regex(r'(?i)(naya product|add product|add new product|new product|naaya product)'), lambda u, c: _handle_add_product(u, {}, u.message.from_user.first_name, c)),
+        ],
+        states={
+            AP_CATEGORY: [CallbackQueryHandler(ap_category_cb, pattern="^ap_cat:")],
+            AP_BRAND:    [MessageHandler(filters.TEXT & ~filters.COMMAND, ap_brand_input)],
+            AP_SPEC:     [MessageHandler(filters.TEXT & ~filters.COMMAND, ap_spec_input)],
+            AP_TYPE:     [CallbackQueryHandler(ap_type_cb, pattern="^ap_type:")],
+        },
+        fallbacks=[CommandHandler("cancel", ap_cancel)],
+        per_chat=True,
+    )
+    app.add_handler(add_conv)
+
     app.add_handler(CommandHandler("start", start))
-    async def add_cmd(u, c): await _handle_add_product(u, {}, u.message.from_user.first_name, c)
-    app.add_handler(CommandHandler("add", add_cmd))
     app.add_handler(CallbackQueryHandler(edit_challan_callback, pattern="^edit_challan$"))
     app.add_handler(CallbackQueryHandler(product_pick_callback, pattern="^pick_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
