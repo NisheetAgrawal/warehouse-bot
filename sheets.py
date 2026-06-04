@@ -375,7 +375,7 @@ def deduct_stock(brand: str, spec: str, type_: str, quantity: int,
     }
 
 
-def add_new_product(category: str, brand: str, spec: str, type_: str, operator: str) -> dict:
+def add_new_product(category: str, brand: str, spec: str, type_: str, operator: str, unit: str = "nos") -> dict:
     ws = _get_sheet("Stock")
     if not ws:
         return {"success": False, "error": "Stock sheet nahi mili"}
@@ -418,20 +418,17 @@ def add_new_product(category: str, brand: str, spec: str, type_: str, operator: 
                 if brand_norm in _normalize(str(row[1])) or _normalize(str(row[1])) in brand_norm:
                     brand_last = i
 
-    valid_count = sum(1 for r in all_rows if _is_product_row(r))
-    next_sr = valid_count + 1
-    new_row = ["", brand, spec, type_, 0, "", "", "⚪ No Stock"]
+    # Col layout: Sr.No | Brand | Spec | Type | Qty | Rate | Total | Stock Status | Unit
+    new_row = ["", brand, spec, type_, 0, "", "", "⚪ No Stock", unit]
 
     if brand_last is not None:
-        insert_idx = brand_last + 2   # +1 for 1-based, +1 to insert after
-        ws.insert_row(new_row, insert_idx)
+        ws.insert_row(new_row, brand_last + 2)
     elif section_last is not None:
-        insert_idx = section_last + 2
-        ws.insert_row(new_row, insert_idx)
+        ws.insert_row(new_row, section_last + 2)
     else:
         ws.append_row(new_row)
 
-    return {"success": True, "brand": brand, "spec": spec, "type": type_, "category": target_cat or category}
+    return {"success": True, "brand": brand, "spec": spec, "type": type_, "category": target_cat or category, "unit": unit}
 
 
 def get_party_summary(party_name: str) -> dict:

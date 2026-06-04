@@ -53,6 +53,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_edit_input(update, context, sender, chat_id)
         return
 
+    # Product form mode — user filled in the add-product template
+    if context.chat_data.get("awaiting_product_form"):
+        await _handle_product_form_reply(update, context, sender)
+        return
+
     parsed = parse_message(user_text, sender)
     intent = parsed.get("intent", "unknown")
     logger.info(f"User={sender} | Intent={intent} | Text={user_text[:60]}")
@@ -67,7 +72,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _handle_ship_out(update, context, parsed, sender, chat_id)
 
     elif intent == "add_product":
-        await _handle_add_product(update, parsed, sender)
+        await _handle_add_product(update, parsed, sender, context)
 
     elif intent == "update_rate":
         await _handle_update_rate(update, parsed)
@@ -253,34 +258,77 @@ async def _execute_ship_out(update_or_query, context, items, vehicle_no, party, 
     )
 
 
-# ── Add new product ──────────────────────────────────────────────
-async def _handle_add_product(update, parsed, sender):
-    items = parsed.get("items", [])
-    if not items:
+# ── Add new product — form-based flow ───────────────────────────
+PRODUCT_FORM_TEMPLATE = """\
+📋 *Naya Product Form*
+Neeche ki details fill karke _isi message ko edit karke_ reply karo:
+
+```
+Category:
+Brand:
+Spec:
+Type:
+Unit:
+```
+
+*Category options:*  Solar Panel · Inverter · ACDB/DCDB · Cable · PVC Material
+*Unit options:*  nos · meters · pcs
+*Type examples:*
+  • Panel → DCR · N-DCR
+  • Inverter → 1P · 3P
+  • Cable → AC 4SX2C · DC · Earthing
+  • ACDB/DCDB → 1P Premium · 3P · etc.\
+"""
+
+async def _handle_add_product(update, parsed, sender, context):
+    context.chat_data["awaiting_product_form"] = True
+    await update.message.reply_text(PRODUCT_FORM_TEMPLATE, parse_mode="Markdown")
+
+
+def _parse_product_form(text: str) -> dict:
+    """Parse key:value lines from the product form reply."""
+    result = {}
+    for line in text.splitlines():
+        if ":" not in line:
+            continue
+        key, _, val = line.partition(":")
+        key = key.strip().lower().replace(" ", "_").replace("/", "_")
+        val = val.strip()
+        if val:
+            result[key] = val
+    return result
+
+
+async def _handle_product_form_reply(update, context, sender):
+    context.chat_data["awaiting_product_form"] = False
+    text = update.message.text.strip()
+    data = _parse_product_form(text)
+
+    category = data.get("category", "")
+    brand    = data.get("brand", "")
+    spec     = data.get("spec", "")
+    type_    = data.get("type", "")
+    unit     = data.get("unit", "nos")
+
+    if not brand or not category:
         await update.message.reply_text(
-            "Product ki details do.\nFormat: `naya product: Solar Panel, Waaree, 650W, DCR`",
+            "❌ *Brand* aur *Category* zaroori hai.\n"
+            "Dobara `/add` bhejo aur form dobara fill karo.",
             parse_mode="Markdown"
         )
         return
 
-    lines = []
-    for item in items:
-        result = add_new_product(
-            item.get("category", ""),
-            item["brand"],
-            item["spec"],
-            item.get("type", "DCR"),
-            sender
+    result = add_new_product(category, brand, spec, type_, sender, unit)
+    if result["success"]:
+        await update.message.reply_text(
+            f"✅ *{brand} {spec} {type_}* add ho gaya!\n"
+            f"📁 Category: {result.get('category', category)}\n"
+            f"📦 Unit: *{unit}*\n"
+            f"Quantity abhi 0 hai — jab maal aaye tab update karo.",
+            parse_mode="Markdown"
         )
-        if result["success"]:
-            lines.append(
-                f"✅ *{result['brand']} {result['spec']} {result['type']}* add ho gaya!\n"
-                f"Quantity abhi 0 hai — jab maal aaye tab update karo."
-            )
-        else:
-            lines.append(f"❌ {result.get('error', 'Error')}")
-
-    await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
+    else:
+        await update.message.reply_text(f"❌ {result.get('error', 'Error')}")
 
 
 # ── Product suggestion helpers ───────────────────────────────────
@@ -684,6 +732,7 @@ def main():
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("add", lambda u, c: _handle_add_product(u, {}, u.message.from_user.first_name, c)))
     app.add_handler(CallbackQueryHandler(edit_challan_callback, pattern="^edit_challan$"))
     app.add_handler(CallbackQueryHandler(product_pick_callback, pattern="^pick_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
