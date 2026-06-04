@@ -58,6 +58,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _handle_product_form_reply(update, context, sender)
         return
 
+    # Detect "add product" trigger phrases BEFORE sending to Groq
+    _lower = user_text.lower()
+    if any(kw in _lower for kw in ("naya product", "add product", "add new product", "new product", "naaya product")):
+        await _handle_add_product(update, {}, sender, context)
+        return
+
     parsed = parse_message(user_text, sender)
     intent = parsed.get("intent", "unknown")
     logger.info(f"User={sender} | Intent={intent} | Text={user_text[:60]}")
