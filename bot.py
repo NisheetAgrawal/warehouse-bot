@@ -231,13 +231,55 @@ async def _handle_ship_out(update, context, parsed, sender, chat_id):
 
 
 async def _execute_ship_out(update_or_query, context, items, vehicle_no, party, sender, chat_id):
-    """Deduct stock and generate challan. Called after all products are confirmed."""
-    is_callback = not hasattr(update_or_query, "message")
-    reply = (update_or_query.message if not is_callback else update_or_query).reply_text
+    """
+    Generate challan PDF FIRST, then deduct stock.
+    This order ensures: if PDF fails, inventory is untouched.
+    """
+    from datetime import timezone, timedelta
+    IST = timezone(timedelta(hours=5, minutes=30))
 
+    # ── Step 1: Generate PDF before touching inventory ────────────
+    # Verify all items exist and get their current info
+    pre_checked = []
+    pre_errors  = []
+    for item in items:
+        info = get_stock(item["brand"], item["spec"], item.get("type", ""))
+        if not info["found"]:
+            pre_errors.append(f"Nahi mila: {item['brand']} {item['spec']} {item.get('type','')}")
+            continue
+        if info["quantity"] < int(item["quantity"]):
+            pre_errors.append(
+                f"Kam stock: {info['brand']} {info['spec']} — "
+                f"Hai {info['quantity']}, chahiye {item['quantity']}"
+            )
+            continue
+        pre_checked.append({**item, "brand": info["brand"], "spec": info["spec"],
+                             "type": info["type"], "unit": info.get("unit", "nos")})
+
+    if not pre_checked:
+        await context.bot.send_message(chat_id=chat_id,
+            text="❌ *Shipment fail:*\n" + "\n".join(pre_errors), parse_mode="Markdown")
+        return
+
+    # Generate the PDF now — before any stock change
+    try:
+        pdf_items = [{"brand": r["brand"], "spec": r["spec"], "type": r["type"],
+                      "quantity": r["quantity"], "unit": r.get("unit", "nos")}
+                     for r in pre_checked]
+        pdf_bytes = generate_delivery_receipt(vehicle_no, sender, pdf_items, party)
+        pdf_io    = io.BytesIO(pdf_bytes)
+        pdf_name  = f"challan_{vehicle_no}_{datetime.now(IST).strftime('%d%b%Y_%H%M')}.pdf"
+    except Exception as e:
+        logger.error(f"PDF generation failed: {e}")
+        await context.bot.send_message(chat_id=chat_id,
+            text="❌ Challan generate nahi hua (PDF error). Stock touch nahi kiya.\nDobara try karo.",
+            parse_mode="Markdown")
+        return
+
+    # ── Step 2: Deduct stock (PDF is ready) ──────────────────────
     results = []
     errors  = []
-    for item in items:
+    for item in pre_checked:
         result = deduct_stock(
             item["brand"], item["spec"], item["type"],
             item["quantity"], vehicle_no, sender, party
@@ -249,20 +291,18 @@ async def _execute_ship_out(update_or_query, context, items, vehicle_no, party, 
 
     if not results:
         await context.bot.send_message(chat_id=chat_id,
-            text="❌ *Shipment fail:*\n" + "\n".join(errors), parse_mode="Markdown")
+            text="❌ *Stock deduction fail:*\n" + "\n".join(errors), parse_mode="Markdown")
         return
 
-    from datetime import timezone, timedelta
-    IST = timezone(timedelta(hours=5, minutes=30))
-    pdf_items = [{"brand": r["brand"], "spec": r["spec"], "type": r["type"], "quantity": r["quantity"], "unit": r.get("unit", "nos")} for r in results]
-    pdf_bytes = generate_delivery_receipt(vehicle_no, sender, pdf_items, party)
-    pdf_io    = io.BytesIO(pdf_bytes)
-    pdf_name  = f"challan_{vehicle_no}_{datetime.now(IST).strftime('%d%b%Y_%H%M')}.pdf"
-
+    # ── Step 3: Send PDF (stock already deducted) ────────────────
     total_qty = sum(r["quantity"] for r in results)
-    summary_lines = [f"✅ *{r['brand']} {r['spec']} {r['type']}*: -{r['quantity']} {r.get('unit','nos')}" for r in results]
-    if errors:
-        summary_lines += ["\n⚠️ *Skipped:*"] + [f"• {e}" for e in errors]
+    summary_lines = [
+        f"✅ *{r['brand']} {r['spec']} {r['type']}*: -{r['quantity']} {r.get('unit','nos')}"
+        for r in results
+    ]
+    skip_lines = pre_errors + errors
+    if skip_lines:
+        summary_lines += ["\n⚠️ *Skipped:*"] + [f"• {e}" for e in skip_lines]
 
     party_line = f"\n🏪 Party: *{party}*" if party else ""
     caption = (
@@ -272,14 +312,27 @@ async def _execute_ship_out(update_or_query, context, items, vehicle_no, party, 
 
     context.chat_data["last_shipment"] = {
         "vehicle_no": vehicle_no, "sender": sender, "party": party,
-        "items": [{"brand": r["brand"], "spec": r["spec"], "type": r["type"], "quantity": r["quantity"]} for r in results]
+        "items": [{"brand": r["brand"], "spec": r["spec"], "type": r["type"],
+                   "quantity": r["quantity"]} for r in results]
     }
 
-    await context.bot.send_document(
-        chat_id=chat_id, document=pdf_io, filename=pdf_name,
-        caption=caption, parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Edit Challan", callback_data="edit_challan")]])
-    )
+    try:
+        await context.bot.send_document(
+            chat_id=chat_id, document=pdf_io, filename=pdf_name,
+            caption=caption, parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✏️ Edit Challan", callback_data="edit_challan")]])
+        )
+    except Exception as e:
+        # PDF send failed but stock IS deducted — tell user clearly
+        logger.error(f"send_document failed after deduction: {e}")
+        await context.bot.send_message(chat_id=chat_id,
+            text=(
+                "⚠️ *Stock deducted but PDF sending failed.*\n"
+                "Stock correctly updated. Please check Sheets.\n\n"
+                + "\n".join(summary_lines)
+            ),
+            parse_mode="Markdown"
+        )
 
 
 # ── Add new product — form-based flow ───────────────────────────

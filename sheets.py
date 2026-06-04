@@ -314,25 +314,36 @@ def get_stock(brand: str, spec: str, type_: str) -> dict:
 
 
 def update_quantity(row_idx: int, new_qty: int):
+    """Update qty + status in ONE batch call to avoid partial-update failures."""
     ws = _get_sheet("Stock")
-    ws.update_cell(row_idx, 5, new_qty)
-    # Update status col H (8)
     if new_qty == 0:
         status = "No Stock"
     elif new_qty < 5:
         status = "Low Stock"
     else:
         status = "In Stock"
-    ws.update_cell(row_idx, 8, status)
-    # Recalculate Total = Qty × Rate in col G (7)
-    row = ws.row_values(row_idx)
-    rate_raw = row[5].strip() if len(row) > 5 else ""
     try:
-        rate = float(str(rate_raw).replace(",", "").replace("₹", "").strip() or 0)
-        if rate > 0:
-            ws.update_cell(row_idx, 7, int(new_qty * rate))
-    except Exception:
-        pass
+        # Update qty (col E=5) and status (col H=8) together — single call
+        row = ws.row_values(row_idx)
+        rate_raw = row[5].strip() if len(row) > 5 else ""
+        try:
+            rate = float(str(rate_raw).replace(",", "").replace("₹", "").strip() or 0)
+            total = int(new_qty * rate) if rate > 0 else ""
+        except Exception:
+            total = ""
+        # Build update: cols E (qty), G (total), H (status) in one batch
+        updates = [{"range": f"E{row_idx}", "values": [[new_qty]]},
+                   {"range": f"H{row_idx}", "values": [[status]]}]
+        if total != "":
+            updates.append({"range": f"G{row_idx}", "values": [[total]]})
+        ws.batch_update(updates)
+    except Exception as e:
+        # Last-resort: just try updating quantity alone — never crash the caller
+        logger.warning(f"batch update failed, trying single cell: {e}")
+        try:
+            ws.update_cell(row_idx, 5, new_qty)
+        except Exception as e2:
+            logger.error(f"update_quantity failed completely: {e2}")
 
 
 def update_rate(brand: str, spec: str, type_: str, rate: int) -> dict:
