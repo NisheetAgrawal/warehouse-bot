@@ -381,54 +381,64 @@ def add_new_product(category: str, brand: str, spec: str, type_: str, operator: 
         return {"success": False, "error": "Stock sheet nahi mili"}
 
     all_rows = ws.get_all_values()
-
-    # Resolve category header text
-    cat_key = category.strip().lower()
-    target_cat = CATEGORY_HEADERS.get(cat_key, "")
-
-    # Find insert position:
-    # 1. Find the category section header row
-    # 2. Within it, find last row of same brand → insert after it
-    # 3. If brand not found in section → insert after last product row of section
-    # 4. If category not found at all → append at end
-
-    cat_start = None       # 0-based index of category header row
-    brand_last = None      # 0-based index of last row of same brand in section
-    section_last = None    # 0-based index of last product row in section
-
+    cat_key    = category.strip().lower()
+    target_cat = CATEGORY_HEADERS.get(cat_key, category)
     brand_norm = _normalize(brand)
 
-    for i, row in enumerate(all_rows):
-        cell_b = str(row[1]).strip().lower() if len(row) > 1 else ""
-        cell_a = str(row[0]).strip().lower() if len(row) > 0 else ""
+    # Scan for category section, then find last product row in it
+    in_section  = False
+    section_end = None   # 1-based row number of last product row in section
+    brand_end   = None   # 1-based row number of last matching-brand row in section
 
-        # Detect category header row (merged or col B contains category name)
-        if target_cat and target_cat.lower() in (cell_b + " " + cell_a):
-            cat_start = i
-            brand_last = None   # reset when new section found
-            section_last = None
+    for i, row in enumerate(all_rows):
+        cell_a = str(row[0]).strip()
+        cell_b = str(row[1]).strip() if len(row) > 1 else ""
+        combined = (cell_a + " " + cell_b).lower()
+
+        # Detect start of our target category section
+        if target_cat.lower() in combined and not cell_a.isdigit():
+            in_section = True
+            section_end = None
+            brand_end   = None
             continue
 
-        if cat_start is not None:
-            # If we hit another category header, section ended
-            if any(h.lower() in cell_b for h in CATEGORY_HEADERS.values()) and i != cat_start:
+        if not in_section:
+            continue
+
+        # Another section started — stop
+        if not cell_a.isdigit() and any(
+            h.lower() in combined
+            for h in ["solar panel", "inverter", "acdb", "cable", "pvc material"]
+        ) and combined.strip():
+            # Only break if this is truly a new major section (roman numeral or letter header)
+            if cell_a.upper() in ("I","II","III","IV","V","VI","A","B","C","D","E") or \
+               any(x in combined for x in ["solar panel","inverter","acdb/dcdb","iv. cable","v. pvc"]):
                 break
-            if _is_product_row(row):
-                section_last = i
-                if brand_norm in _normalize(str(row[1])) or _normalize(str(row[1])) in brand_norm:
-                    brand_last = i
 
-    # Col layout: Sr.No | Brand | Spec | Type | Qty | Rate | Total | Stock Status | Unit
-    new_row = ["", brand, spec, type_, 0, "", "", "⚪ No Stock", unit]
+        if _is_product_row(row):
+            section_end = i + 1   # 1-based
+            if brand_norm in _normalize(cell_b) or _normalize(cell_b) in brand_norm:
+                brand_end = i + 1
 
-    if brand_last is not None:
-        ws.insert_row(new_row, brand_last + 2)
-    elif section_last is not None:
-        ws.insert_row(new_row, section_last + 2)
+    # Target row = after brand group, or after section, or next empty row
+    if brand_end is not None:
+        target_row = brand_end + 1
+    elif section_end is not None:
+        target_row = section_end + 1
     else:
-        ws.append_row(new_row)
+        # Find first truly empty row (all cols A-I empty)
+        target_row = len(all_rows) + 1
+        for i, row in enumerate(all_rows):
+            if not any(str(c).strip() for c in row[:9]):
+                target_row = i + 1
+                break
 
-    return {"success": True, "brand": brand, "spec": spec, "type": type_, "category": target_cat or category, "unit": unit}
+    # Write directly to specific cells — avoids merged-cell insert_row bugs
+    new_row = ["", brand, spec, type_, 0, "", "", "⚪ No Stock", unit]
+    ws.update(f"A{target_row}:I{target_row}", [new_row])
+
+    return {"success": True, "brand": brand, "spec": spec, "type": type_,
+            "category": target_cat, "unit": unit, "row": target_row}
 
 
 def get_party_summary(party_name: str) -> dict:
