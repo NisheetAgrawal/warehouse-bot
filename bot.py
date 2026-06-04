@@ -4,10 +4,10 @@ import os
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
-    CallbackQueryHandler, ConversationHandler, filters, ContextTypes
+    CallbackQueryHandler, filters, ContextTypes
 )
 from dotenv import load_dotenv
 load_dotenv()
@@ -255,121 +255,94 @@ async def _execute_ship_out(update_or_query, context, items, vehicle_no, party, 
 
 
 # ── Add new product — form-based flow ───────────────────────────
-# ── Add Product — Step-by-step conversation ──────────────────────
-AP_CATEGORY, AP_BRAND, AP_SPEC, AP_TYPE = range(4)
-
-CATEGORY_BUTTONS = [
-    [InlineKeyboardButton("☀️ Solar Panel",  callback_data="ap_cat:Solar Panel"),
-     InlineKeyboardButton("⚡ Inverter",      callback_data="ap_cat:Inverter")],
-    [InlineKeyboardButton("🔌 ACDB/DCDB",    callback_data="ap_cat:ACDB/DCDB"),
-     InlineKeyboardButton("🔗 Cable",         callback_data="ap_cat:Cable")],
-    [InlineKeyboardButton("🧱 PVC Material", callback_data="ap_cat:PVC Material")],
-    [InlineKeyboardButton("❌ Cancel",        callback_data="ap_cat:cancel")],
-]
-
-TYPE_BUTTONS = {
-    "Solar Panel":  [["DCR", "N-DCR"]],
-    "Inverter":     [["1P", "3P"]],
-    "Cable":        [["DC", "AC 4SX2C", "Earthing"]],
-    "ACDB/DCDB":    [["1P Premium", "1P Normal", "3P"], ["1 in 1 out", "2 in 2 out"]],
-    "PVC Material": [["(none)"]],
-}
+# ── Add Product — single message, direct parse ───────────────────
+# Format: /add solar, Waaree, 650, DCR
+#         /add inverter, Polycab, 5kw, 3P
+#         /add cable, Easyone, DC
+#         /add pvc, GP C Channel, 150X50
 
 UNIT_MAP = {
-    "Solar Panel": "nos", "Inverter": "nos", "ACDB/DCDB": "nos",
-    "Cable": "meters", "PVC Material": "pcs",
+    "solar panel": "nos", "inverter": "nos", "acdb/dcdb": "nos",
+    "acdb": "nos", "dcdb": "nos",
+    "cable": "meters", "pvc material": "pcs", "pvc": "pcs",
 }
+
+CAT_ALIASES = {
+    "solar": "Solar Panel", "solar panel": "Solar Panel", "panel": "Solar Panel",
+    "inverter": "Inverter", "inv": "Inverter",
+    "cable": "Cable",
+    "acdb": "ACDB/DCDB", "dcdb": "ACDB/DCDB", "acdb/dcdb": "ACDB/DCDB",
+    "pvc": "PVC Material", "pvc material": "PVC Material",
+}
+
+ADD_HELP = (
+    "🆕 *Naya Product add karne ka format:*\n\n"
+    "☀️ *Solar Panel:*\n`/add solar, Waaree, 650, DCR`\n"
+    "_(brand, watt, DCR/N-DCR)_\n\n"
+    "⚡ *Inverter:*\n`/add inverter, Polycab, 5kw, 3P`\n"
+    "_(brand, kw, 1P/3P)_\n\n"
+    "🔗 *Cable:*\n`/add cable, Easyone, DC`\n"
+    "_(brand, DC/AC 4SX2C/Earthing)_\n\n"
+    "🔌 *ACDB/DCDB:*\n`/add acdb, ACDB, 1-6KW, 1P Premium`\n"
+    "_(ACDB or DCDB, kw range, type)_\n\n"
+    "🧱 *PVC Material:*\n`/add pvc, GP C Channel, 150X50`\n"
+    "_(product name, size)_"
+)
 
 
 async def _handle_add_product(update, parsed, sender, context):
+    """Entry: show help if no args, else parse and add."""
     msg = update.message
-    await msg.reply_text(
-        "🆕 *Naya Product — Step 1 of 4*\nCategory select karo:",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(CATEGORY_BUTTONS)
-    )
-    return AP_CATEGORY
+    text = msg.text.strip() if msg.text else ""
+
+    # Strip /add prefix if present
+    for prefix in ("/add ", "/add\n"):
+        if text.lower().startswith(prefix):
+            text = text[len(prefix):]
+            break
+    else:
+        if text.lower() == "/add":
+            text = ""
+
+    if not text or text.lower() in ("naya product", "add product", "add new product", "new product"):
+        await msg.reply_text(ADD_HELP, parse_mode="Markdown")
+        return
+
+    await _parse_and_add_product(msg, text, sender)
 
 
-async def ap_category_cb(update, context):
-    query = update.callback_query
-    await query.answer()
-    val = query.data.split(":", 1)[1]
-    if val == "cancel":
-        await query.message.reply_text("❌ Cancelled.")
-        return ConversationHandler.END
-    context.chat_data["ap"] = {"category": val, "unit": UNIT_MAP.get(val, "nos")}
-    await query.message.reply_text(
-        f"✅ Category: *{val}*\n\n"
-        "*Step 2 of 4* — Brand ka naam type karo:",
-        parse_mode="Markdown",
-        reply_markup=ForceReply(selective=True, input_field_placeholder="e.g. Waaree, Polycab, Havells...")
-    )
-    return AP_BRAND
+async def _parse_and_add_product(msg, text: str, sender: str):
+    """Parse 'category, brand, spec, type' and add product."""
+    parts = [p.strip() for p in text.split(",")]
+    if len(parts) < 2:
+        await msg.reply_text(
+            "❌ Format galat hai.\nExample: `/add solar, Waaree, 650, DCR`",
+            parse_mode="Markdown"
+        )
+        return
 
+    cat_raw  = parts[0].lower()
+    brand    = parts[1] if len(parts) > 1 else ""
+    spec     = parts[2] if len(parts) > 2 else ""
+    type_    = parts[3] if len(parts) > 3 else ""
+    category = CAT_ALIASES.get(cat_raw, parts[0].title())
+    unit     = UNIT_MAP.get(cat_raw, "nos")
 
-async def ap_brand_input(update, context):
-    context.chat_data["ap"]["brand"] = update.message.text.strip()
-    cat = context.chat_data["ap"]["category"]
-    await update.message.reply_text(
-        f"✅ Brand: *{context.chat_data['ap']['brand']}*\n\n"
-        "*Step 3 of 4* — Spec type karo:\n"
-        "_(Panels: 575 · Inverters: 3kw · Cables: — · PVC: 25mm)_\n"
-        "Spec nahi hai toh *-* bhejo.",
-        parse_mode="Markdown",
-        reply_markup=ForceReply(selective=True, input_field_placeholder="Spec or - for none...")
-    )
-    return AP_SPEC
+    if not brand:
+        await msg.reply_text("❌ Brand missing.\nExample: `/add solar, Waaree, 650, DCR`", parse_mode="Markdown")
+        return
 
-
-async def ap_spec_input(update, context):
-    spec = update.message.text.strip()
-    context.chat_data["ap"]["spec"] = "" if spec == "-" else spec
-    cat = context.chat_data["ap"]["category"]
-    rows = TYPE_BUTTONS.get(cat, [["(none)"]])
-    buttons = [[InlineKeyboardButton(t, callback_data=f"ap_type:{t}") for t in row] for row in rows]
-    buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="ap_type:cancel")])
-    await update.message.reply_text(
-        f"✅ Spec: *{context.chat_data['ap']['spec'] or '—'}*\n\n"
-        "*Step 4 of 4* — Type select karo:",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
-    return AP_TYPE
-
-
-async def ap_type_cb(update, context):
-    query = update.callback_query
-    await query.answer()
-    val = query.data.split(":", 1)[1]
-    if val == "cancel":
-        context.chat_data.pop("ap", None)
-        await query.message.reply_text("❌ Cancelled.")
-        return ConversationHandler.END
-    ap = context.chat_data.pop("ap", {})
-    ap["type"] = "" if val == "(none)" else val
-    sender = query.from_user.first_name
-    result = add_new_product(ap["category"], ap["brand"], ap["spec"], ap["type"], sender, ap["unit"])
+    result = add_new_product(category, brand, spec, type_, sender, unit)
     if result["success"]:
-        await query.message.reply_text(
-            f"✅ *{ap['brand']} {ap['spec']} {ap['type']}* add ho gaya!\n"
-            f"📁 Category: *{ap['category']}*  |  📦 Unit: *{ap['unit']}*\n"
+        preview = " ".join(filter(None, [brand, spec, type_]))
+        await msg.reply_text(
+            f"✅ *{preview}* add ho gaya!\n"
+            f"📁 {category}  |  📦 {unit}\n"
             "_Quantity 0 hai — jab maal aaye tab update karo._",
             parse_mode="Markdown"
         )
     else:
-        await query.message.reply_text(f"❌ {result.get('error', 'Error')}")
-    return ConversationHandler.END
-
-
-async def ap_cancel(update, context):
-    context.chat_data.pop("ap", None)
-    await update.message.reply_text("❌ Cancelled.")
-    return ConversationHandler.END
-
-
-def _is_product_form(text): return False
-async def _handle_product_form_reply(update, context, sender): pass
+        await msg.reply_text(f"❌ {result.get('error', 'Error')}")
 
 
 # ── Product suggestion helpers ───────────────────────────────────
@@ -773,24 +746,8 @@ def main():
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Add product conversation handler — must be registered FIRST
-    add_conv = ConversationHandler(
-        entry_points=[
-            CommandHandler("add", lambda u, c: _handle_add_product(u, {}, u.from_user.first_name if hasattr(u, 'from_user') else "", c)),
-            MessageHandler(filters.Regex(r'(?i)(naya product|add product|add new product|new product|naaya product)'), lambda u, c: _handle_add_product(u, {}, u.message.from_user.first_name, c)),
-        ],
-        states={
-            AP_CATEGORY: [CallbackQueryHandler(ap_category_cb, pattern="^ap_cat:")],
-            AP_BRAND:    [MessageHandler(filters.TEXT & ~filters.COMMAND, ap_brand_input)],
-            AP_SPEC:     [MessageHandler(filters.TEXT & ~filters.COMMAND, ap_spec_input)],
-            AP_TYPE:     [CallbackQueryHandler(ap_type_cb, pattern="^ap_type:")],
-        },
-        fallbacks=[CommandHandler("cancel", ap_cancel)],
-        per_chat=True,
-    )
-    app.add_handler(add_conv)
-
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("add", lambda u, c: _handle_add_product(u, {}, u.effective_user.first_name, c)))
     app.add_handler(CallbackQueryHandler(edit_challan_callback, pattern="^edit_challan$"))
     app.add_handler(CallbackQueryHandler(product_pick_callback, pattern="^pick_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
