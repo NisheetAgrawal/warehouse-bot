@@ -284,6 +284,14 @@ def get_stock(brand: str, spec: str, type_: str) -> dict:
 def update_quantity(row_idx: int, new_qty: int):
     ws = _get_sheet("Stock")
     ws.update_cell(row_idx, 5, new_qty)
+    # Update status col H (8)
+    if new_qty == 0:
+        status = "No Stock"
+    elif new_qty < 5:
+        status = "Low Stock"
+    else:
+        status = "In Stock"
+    ws.update_cell(row_idx, 8, status)
     # Recalculate Total = Qty × Rate in col G (7)
     row = ws.row_values(row_idx)
     rate_raw = row[5].strip() if len(row) > 5 else ""
@@ -457,7 +465,12 @@ def add_new_product(category: str, brand: str, spec: str, type_: str, operator: 
                 sr_no += 1
 
     qty    = init_qty if init_qty > 0 else 0
-    status = "In Stock" if qty > 0 else "No Stock"
+    if qty == 0:
+        status = "No Stock"
+    elif qty < 5:
+        status = "Low Stock"
+    else:
+        status = "In Stock"
     new_row = [sr_no, brand, spec, type_, qty, "", "", status, unit]
     ws.update(f"A{target_row}:I{target_row}", [new_row])
 

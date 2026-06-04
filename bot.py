@@ -16,7 +16,7 @@ load_dotenv()
 from config import TELEGRAM_TOKEN
 from groq_parser import parse_message
 from sheets import get_stock, add_stock, deduct_stock, add_new_product, update_rate, _normalize, search_similar_products, get_all_products_by_brand, get_party_summary, get_full_stock
-from pdf_generator import generate_delivery_receipt
+from pdf_generator import generate_delivery_receipt, generate_stock_report_pdf
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -40,58 +40,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ── Full stock report ────────────────────────────────────────────
+# ── Full stock report (PDF) ──────────────────────────────────────
 async def full_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await context.bot.send_chat_action(chat_id=update.message.chat_id, action="typing")
+    await context.bot.send_chat_action(chat_id=update.message.chat_id, action="upload_document")
     products = get_full_stock()
 
     if not products:
         await update.message.reply_text("❌ Stock sheet nahi mili ya empty hai.")
         return
 
-    # Group by section
-    sections = {}
-    for p in products:
-        sections.setdefault(p["section"], []).append(p)
+    total    = len(products)
+    in_stk   = sum(1 for p in products if p["quantity"] > 0)
+    out_stk  = total - in_stk
 
-    SECTION_ICONS = {
-        "Solar Panel": "☀️", "Inverter": "⚡", "ACDB/DCDB": "🔌",
-        "Cable": "🔗", "PVC Material": "🧱", "Structure": "🏗️", "General": "📦"
-    }
+    pdf_bytes = generate_stock_report_pdf(products)
+    pdf_io    = io.BytesIO(pdf_bytes)
+    now_str   = datetime.now().strftime("%d%b%Y")
+    pdf_name  = f"StockReport_{now_str}.pdf"
 
-    total_products = len(products)
-    in_stock = sum(1 for p in products if p["quantity"] > 0)
-    out_stock = total_products - in_stock
-
-    messages = []
-    current_msg = f"📊 *FULL STOCK REPORT*\n_{total_products} products | ✅ {in_stock} in stock | ❌ {out_stock} out_\n"
-
-    for section, items in sections.items():
-        icon = SECTION_ICONS.get(section, "📦")
-        block = f"\n{icon} *{section.upper()}*\n"
-        for p in items:
-            name = " ".join(filter(None, [p["brand"], p["spec"], p["type"]]))
-            qty  = p["quantity"]
-            unit = p["unit"]
-            if qty == 0:
-                status = "❌"
-            elif qty < 5:
-                status = "⚠️"
-            else:
-                status = "✅"
-            block += f"{status} {name}: *{qty} {unit}*\n"
-
-        # Telegram message limit ~4096 chars — split if needed
-        if len(current_msg) + len(block) > 3800:
-            messages.append(current_msg)
-            current_msg = block
-        else:
-            current_msg += block
-
-    messages.append(current_msg)
-
-    for msg in messages:
-        await update.message.reply_text(msg, parse_mode="Markdown")
+    caption = (
+        f"📊 *Stock Report — {now_str}*\n"
+        f"_{total} products | ✅ {in_stk} in stock | ❌ {out_stk} out_"
+    )
+    await update.message.reply_document(
+        document=pdf_io, filename=pdf_name,
+        caption=caption, parse_mode="Markdown"
+    )
 
 
 # ── Main message handler ─────────────────────────────────────────
@@ -358,13 +332,44 @@ ADD_HELP = (
 )
 
 
+_EXPLICIT_CAT_MAP = [
+    # (keyword_in_user_message, canonical_category)
+    ("pvc material", "PVC Material"), ("pvc me", "PVC Material"), ("pvc mein", "PVC Material"),
+    ("pvc main", "PVC Material"),
+    ("structure me", "Structure"), ("structure mein", "Structure"), ("structure main", "Structure"),
+    ("solar panel", "Solar Panel"), ("solar me", "Solar Panel"), ("solar mein", "Solar Panel"),
+    ("inverter me", "Inverter"), ("inverter mein", "Inverter"),
+    ("cable me", "Cable"), ("cable mein", "Cable"),
+    ("acdb me", "ACDB/DCDB"), ("dcdb me", "ACDB/DCDB"),
+    ("acdb mein", "ACDB/DCDB"), ("dcdb mein", "ACDB/DCDB"),
+]
+
+def _override_category_from_text(user_text: str, items: list) -> list:
+    """If user explicitly says a category in their message, override Groq's guess."""
+    text_lower = user_text.lower()
+    override_cat = None
+    for kw, cat in _EXPLICIT_CAT_MAP:
+        if kw in text_lower:
+            override_cat = cat
+            break
+    if override_cat:
+        for item in items:
+            item["category"] = override_cat
+    return items
+
+
 async def _handle_add_product(update_or_query, parsed, sender, context):
     # Works with both Update objects and CallbackQuery objects
     if hasattr(update_or_query, "message") and update_or_query.message:
         msg = update_or_query.message
+        user_text = (update_or_query.message.text or "").strip()
     else:
         msg = update_or_query  # it's a CallbackQuery — use .reply_text directly
+        user_text = ""
     items = parsed.get("items", [])
+    # Override category if user explicitly stated it (beats Groq's guess)
+    if user_text and items:
+        items = _override_category_from_text(user_text, items)
 
     # No items parsed — show help
     if not items:
