@@ -732,7 +732,8 @@ def main():
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("add", lambda u, c: _handle_add_product(u, {}, u.message.from_user.first_name, c)))
+    async def add_cmd(u, c): await _handle_add_product(u, {}, u.message.from_user.first_name, c)
+    app.add_handler(CommandHandler("add", add_cmd))
     app.add_handler(CallbackQueryHandler(edit_challan_callback, pattern="^edit_challan$"))
     app.add_handler(CallbackQueryHandler(product_pick_callback, pattern="^pick_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
