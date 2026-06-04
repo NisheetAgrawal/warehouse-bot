@@ -278,15 +278,17 @@ CAT_ALIASES = {
 ADD_HELP = (
     "🆕 *Naya Product add karne ka format:*\n\n"
     "☀️ *Solar Panel:*\n`/add solar, Waaree, 650, DCR`\n"
-    "_(brand, watt, DCR/N-DCR)_\n\n"
+    "_(brand, watt, DCR or N-DCR)_\n\n"
     "⚡ *Inverter:*\n`/add inverter, Polycab, 5kw, 3P`\n"
-    "_(brand, kw, 1P/3P)_\n\n"
+    "_(brand, kw, 1P or 3P)_\n\n"
     "🔗 *Cable:*\n`/add cable, Easyone, DC`\n"
-    "_(brand, DC/AC 4SX2C/Earthing)_\n\n"
+    "_(brand, DC / AC 4SX2C / Earthing)_\n\n"
     "🔌 *ACDB/DCDB:*\n`/add acdb, ACDB, 1-6KW, 1P Premium`\n"
-    "_(ACDB or DCDB, kw range, type)_\n\n"
-    "🧱 *PVC Material:*\n`/add pvc, GP C Channel, 150X50`\n"
-    "_(product name, size)_"
+    "_(ACDB or DCDB, kw range, 1P/3P type)_\n\n"
+    "🧱 *PVC / Hardware:*\n`/add pvc, GP C Channel, 150X50`\n"
+    "_(product name, size — unit default: pcs)_\n"
+    "`/add pvc, GP C Channel, 150X50, meters`\n"
+    "_(add 'meters' at end if measured in meters)_"
 )
 
 
@@ -327,6 +329,11 @@ async def _parse_and_add_product(msg, text: str, sender: str):
     type_    = parts[3] if len(parts) > 3 else ""
     category = CAT_ALIASES.get(cat_raw, parts[0].title())
     unit     = UNIT_MAP.get(cat_raw, "nos")
+
+    # For PVC/hardware: 4th field can be unit override (meters/pcs/nos) instead of type
+    if cat_raw in ("pvc", "pvc material") and type_.lower() in ("meters", "pcs", "nos", "mtr"):
+        unit  = "meters" if type_.lower() in ("meters", "mtr") else type_.lower()
+        type_ = ""
 
     if not brand:
         await msg.reply_text("❌ Brand missing.\nExample: `/add solar, Waaree, 650, DCR`", parse_mode="Markdown")

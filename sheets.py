@@ -420,17 +420,22 @@ def add_new_product(category: str, brand: str, spec: str, type_: str, operator: 
             if brand_norm in _normalize(cell_b) or _normalize(cell_b) in brand_norm:
                 brand_end = i + 1
 
-    # Target row = after brand group, or after section, or next empty row
-    if brand_end is not None:
-        target_row = brand_end + 1
-    elif section_end is not None:
-        target_row = section_end + 1
+    # Target row = after brand group or after section
+    base_row = brand_end if brand_end is not None else section_end
+    if base_row is not None:
+        # Find first truly empty row at or after base_row + 1
+        target_row = base_row + 1
+        while target_row <= len(all_rows):
+            r = all_rows[target_row - 1]
+            if not any(str(c).strip() for c in r[:9]):
+                break
+            target_row += 1
     else:
-        # Find first truly empty row (all cols A-I empty)
+        # No section found — append after last non-empty row
         target_row = len(all_rows) + 1
-        for i, row in enumerate(all_rows):
-            if not any(str(c).strip() for c in row[:9]):
-                target_row = i + 1
+        for i in range(len(all_rows) - 1, -1, -1):
+            if any(str(c).strip() for c in all_rows[i][:9]):
+                target_row = i + 2
                 break
 
     # Write directly to specific cells — avoids merged-cell insert_row bugs
