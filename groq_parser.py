@@ -89,17 +89,32 @@ def _preprocess(text: str) -> str:
 
 def parse_message(user_text: str, sender_name: str) -> dict:
     """
-    Send user message to Groq Llama3-70b.
+    Send user message to Groq Llama3-70b with live product catalog injected.
     Returns parsed intent dict or {"intent": "unknown"} on any failure.
     """
     from config import GROQ_API_KEY
+    from sheets import catalog_as_prompt_text
+
+    catalog_text = catalog_as_prompt_text()
+    full_prompt = (
+        SYSTEM_PROMPT
+        + "\n\n═══════════════════════════════════════════════════\n"
+        + "LIVE PRODUCT CATALOG (use product_id from this list in your response):\n"
+        + "Format: product_id: Brand | Spec | Type (unit)\n\n"
+        + catalog_text
+        + "\n\nIMPORTANT: For every item in your JSON response, include "
+        + '"product_id" matching EXACTLY from the catalog above. '
+        + "If user says 'mid clamp' → STR-GEN-008, 'end clamp' → STR-GEN-009, "
+        + "'Waaree 575 DCR' → SP-WAR-001, 'Polycab ACDB 3kw' → ACDB-PCB-001, etc.\n"
+        + "═══════════════════════════════════════════════════"
+    )
 
     payload = {
         "model": "llama-3.3-70b-versatile",
         "temperature": 0,
-        "max_tokens": 600,
+        "max_tokens": 700,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": full_prompt},
             {"role": "user", "content": f"{_preprocess(user_text)}\n(sent by: {sender_name})"}
         ]
     }

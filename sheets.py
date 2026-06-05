@@ -2,8 +2,58 @@ import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
 import logging
+import time
 
 logger = logging.getLogger(__name__)
+
+# ── Product catalog cache (refreshed every 5 min) ─────────────────────────────
+_catalog_cache: list = []
+_catalog_ts: float   = 0.0
+_CATALOG_TTL: int    = 300   # seconds
+
+def get_live_catalog() -> list:
+    """
+    Returns list of dicts: {product_id, brand, spec, type_, unit, qty}
+    Cached for 5 minutes so we don't hammer Sheets API on every message.
+    """
+    global _catalog_cache, _catalog_ts
+    if time.time() - _catalog_ts < _CATALOG_TTL and _catalog_cache:
+        return _catalog_cache
+
+    ws = _get_sheet("Stock")
+    if not ws:
+        return _catalog_cache  # return stale on error
+
+    rows = ws.get_all_values()
+    catalog = []
+    for row in rows:
+        pid   = row[0].strip() if row else ""
+        brand = row[1].strip() if len(row) > 1 else ""
+        spec  = row[2].strip() if len(row) > 2 else ""
+        type_ = row[3].strip() if len(row) > 3 else ""
+        qty_s = row[4].strip() if len(row) > 4 else ""
+        unit  = row[8].strip() if len(row) > 8 else ""
+        if not pid or pid == "product_id" or not brand:
+            continue
+        try:    qty = int(qty_s)
+        except: qty = 0
+        catalog.append({"product_id": pid, "brand": brand, "spec": spec,
+                         "type_": type_, "unit": unit, "qty": qty})
+
+    _catalog_cache = catalog
+    _catalog_ts    = time.time()
+    logger.info(f"Catalog refreshed: {len(catalog)} products")
+    return catalog
+
+
+def catalog_as_prompt_text() -> str:
+    """Compact product list for injecting into Groq prompt."""
+    cat = get_live_catalog()
+    lines = []
+    for p in cat:
+        parts = [x for x in [p["brand"], p["spec"], p["type_"]] if x]
+        lines.append(f'{p["product_id"]}: {" | ".join(parts)} ({p["unit"]})')
+    return "\n".join(lines)
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -146,19 +196,23 @@ def _specs_match(row_spec: str, row_type: str, query_spec: str, query_type: str)
     return spec_match and type_match
 
 
-def find_product_row(brand: str, spec: str, type_: str):
+def find_product_row(brand: str, spec: str, type_: str, product_id: str = ""):
     """
-    Find a product row in Sheet1.
+    Find a product row. Tries product_id direct lookup first (instant),
+    then falls back to brand+spec fuzzy search.
     Returns (row_index_1based, row_data) or (None, None)
-
-    Smart fallback: if brand contains 'acdb' or 'dcdb' mixed with a manufacturer
-    name (e.g. 'Polycab ACDB'), also tries searching with just 'ACDB'/'DCDB'.
     """
     ws = _get_sheet("Stock")
     if not ws:
         return None, None
 
     all_rows = ws.get_all_values()
+
+    # Fast path: direct product_id lookup (O(n) scan but exact match)
+    if product_id:
+        for i, row in enumerate(all_rows):
+            if row and row[0].strip() == product_id:
+                return i + 1, row
 
     def _search(brand_q):
         brand_q_norm = _normalize(brand_q)
@@ -277,8 +331,8 @@ def search_similar_products(brand: str, spec: str, type_: str, top_n: int = 4) -
     return scored[:top_n]
 
 
-def get_stock(brand: str, spec: str, type_: str) -> dict:
-    row_idx, row = find_product_row(brand, spec, type_)
+def get_stock(brand: str, spec: str, type_: str, product_id: str = "") -> dict:
+    row_idx, row = find_product_row(brand, spec, type_, product_id)
     if row_idx is None:
         return {"found": False, "brand": brand, "spec": spec, "type": type_}
 
@@ -349,8 +403,8 @@ def update_rate(brand: str, spec: str, type_: str, rate: int) -> dict:
     }
 
 
-def add_stock(brand: str, spec: str, type_: str, quantity: int, operator: str, party: str = "") -> dict:
-    info = get_stock(brand, spec, type_)
+def add_stock(brand: str, spec: str, type_: str, quantity: int, operator: str, party: str = "", product_id: str = "") -> dict:
+    info = get_stock(brand, spec, type_, product_id)
     if not info["found"]:
         return {"success": False, "error": f"Nahi mila: {brand} {spec} {type_}"}
 
@@ -378,8 +432,8 @@ def add_stock(brand: str, spec: str, type_: str, quantity: int, operator: str, p
 
 
 def deduct_stock(brand: str, spec: str, type_: str, quantity: int,
-                 vehicle_no: str, operator: str, party: str = "") -> dict:
-    info = get_stock(brand, spec, type_)
+                 vehicle_no: str, operator: str, party: str = "", product_id: str = "") -> dict:
+    info = get_stock(brand, spec, type_, product_id)
     if not info["found"]:
         return {
             "success": False,

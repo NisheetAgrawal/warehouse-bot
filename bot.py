@@ -125,7 +125,7 @@ async def _handle_check_stock(update, parsed, context):
 
     lines = []
     for item in items:
-        info = get_stock(item["brand"], item["spec"], item.get("type", "DCR"))
+        info = get_stock(item["brand"], item["spec"], item.get("type", "DCR"), item.get("product_id", ""))
         if not info["found"]:
             await _suggest_products(update, context, item, {"intent": "check_stock"})
             continue
@@ -162,7 +162,7 @@ async def _handle_add_stock(update, parsed, sender, context):
         if not qty or int(qty) <= 0:
             lines.append(f"❌ Quantity missing: {item['brand']} {item['spec']}")
             continue
-        info = get_stock(item["brand"], item["spec"], item.get("type", "DCR"))
+        info = get_stock(item["brand"], item["spec"], item.get("type", "DCR"), item.get("product_id", ""))
         if not info["found"]:
             # Store pending add and ask for suggestions — don't update anything yet
             context.chat_data["pending_add"] = {"item": item, "qty": int(qty), "sender": sender, "party": party}
@@ -206,7 +206,7 @@ async def _handle_ship_out(update, context, parsed, sender, chat_id):
                 parse_mode="Markdown"
             )
             return
-        info = get_stock(item["brand"], item["spec"], item.get("type", "DCR"))
+        info = get_stock(item["brand"], item["spec"], item.get("type", "DCR"), item.get("product_id", ""))
         if not info["found"]:
             # Product not found — ask user to pick; hold entire shipment
             context.chat_data["pending_shipment"] = {
@@ -245,7 +245,7 @@ async def _execute_ship_out(update_or_query, context, items, vehicle_no, party, 
     pre_checked = []
     pre_errors  = []
     for item in items:
-        info = get_stock(item["brand"], item["spec"], item.get("type", ""))
+        info = get_stock(item["brand"], item["spec"], item.get("type", ""), item.get("product_id", ""))
         if not info["found"]:
             pre_errors.append(f"Nahi mila: {item['brand']} {item['spec']} {item.get('type','')}")
             continue
@@ -284,7 +284,8 @@ async def _execute_ship_out(update_or_query, context, items, vehicle_no, party, 
     for item in pre_checked:
         result = deduct_stock(
             item["brand"], item["spec"], item["type"],
-            item["quantity"], vehicle_no, sender, party
+            item["quantity"], vehicle_no, sender, party,
+            item.get("product_id", "")
         )
         if result["success"]:
             results.append(result)
