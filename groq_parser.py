@@ -118,13 +118,23 @@ def _python_fallback(user_text: str):
     text_pre  = _preprocess(user_text)
     text_low  = text_pre.lower().strip()
 
-    add_signals   = ["aaya", "se aaya", "from ", "aa gaya", "aaya hai", "mila", "aya"]
+    # "ko gaya/ko gya/le gaya" = sold/shipped OUT — must check FIRST before add signals
+    ship_signals  = ["ko gaya", "ko gya", "ko dia", "ko diya", "le gaya", "le gya",
+                     "bhej diya", "bheja", "truck me", "truck mein", "challan"]
+    is_ship  = any(s in text_low for s in ship_signals)
+
+    add_signals   = ["se aaya", "se aya", "from ", "aa gaya", "aaya hai", "mila",
+                     " aaya", " aya "]   # space-padded to avoid matching inside "gaya"
     check_signals = ["kitna", "stock", "hai kitna", "kitne", "batao", "bata", "check"]
 
-    is_add   = any(s in text_low for s in add_signals)
+    is_add   = (not is_ship) and any(s in text_low for s in add_signals)
     is_check = any(s in text_low for s in check_signals)
 
-    if not is_add and not is_check:
+    # "aaya" as a standalone word (not inside gaya/bhagaya etc.)
+    if not is_add and not is_ship and re.search(r'\baaya\b', text_low):
+        is_add = True
+
+    if not is_add and not is_check and not is_ship:
         return None
 
     # Match against EVERY brand in the live catalog
@@ -144,13 +154,24 @@ def _python_fallback(user_text: str):
     if not matched:
         return None
 
-    if is_check and not is_add:
+    qty   = _extract_qty(text_low)
+    party = _extract_party(text_pre, matched)
+
+    if is_check and not is_add and not is_ship:
         logger.info(f"Fallback check_stock: {matched} ({matched_pid})")
         return {"intent": "check_stock",
                 "items": [{"brand": matched, "spec": "", "type": "", "product_id": matched_pid}]}
 
-    qty   = _extract_qty(text_low)
-    party = _extract_party(text_pre, matched)
+    if is_ship:
+        logger.info(f"Fallback ship_out: {matched} ({matched_pid}) qty={qty} party={party}")
+        return {
+            "intent":     "ship_out",
+            "vehicle_no": "NOT PROVIDED",
+            "party":      party,
+            "operator":   None,
+            "items":      [{"brand": matched, "spec": "", "type": "",
+                            "quantity": qty, "product_id": matched_pid}]
+        }
 
     logger.info(f"Fallback add_stock: {matched} ({matched_pid}) qty={qty} party={party}")
     return {

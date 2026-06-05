@@ -126,8 +126,16 @@ Stock-in examples for structure/PVC (MEMORISE THESE PATTERNS):
 - "mid clamp kitna stock hai"              → check_stock, brand="Mid Clamp"
 - "truck me end clamp 50 pcs"              → ship_out, brand="End Clamp", quantity=50
 
-KEY RULE: "PRODUCT QTY SUPPLIER SE AYA/AAYA" or "PRODUCT QTYPCS from SUPPLIER" = add_stock ALWAYS.
-"AYA", "AYA HAI", "AAYA", "SE AYA", "FROM X", "X SE AYA" all mean goods arrived = add_stock.
+KEY RULE — ADD vs SHIP:
+- "SE AAYA / SE AYA / from X" = goods ARRIVED from supplier = add_stock
+- "KO GAYA / KO GYA / KO DIA / LE GAYA / LE GYA" = goods LEFT to customer = ship_out
+- NEVER confuse these two. "gaya" ≠ "aaya".
+
+Ship-out examples:
+- "GP LEG 4 FEET SWAYAM KO GYA"         → ship_out, brand="GP LEG", spec="4 FEET", quantity=1, party="Swayam"
+- "GP LEG 4 FEET 8 pcs SWAYAM KO GYA"   → ship_out, brand="GP LEG", spec="4 FEET", quantity=8, party="Swayam"
+- "end clamp 50 Raj ko gaya"             → ship_out, brand="End Clamp", quantity=50, party="Raj"
+- "mid clamp 100 Ramesh le gaya"         → ship_out, brand="Mid Clamp", quantity=100, party="Ramesh"
 
 SPEC PARSING RULES:
 - Wattage: "575", "575w", "575 watt" → "575"
