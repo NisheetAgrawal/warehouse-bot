@@ -70,6 +70,23 @@ def _sanitize_parsed(parsed: dict) -> dict:
     return parsed
 
 
+def _preprocess(text: str) -> str:
+    """
+    Normalise common user input quirks BEFORE sending to Groq.
+    This catches patterns the LLM misses (~20% of the time).
+    """
+    # "250PCS" / "250NOS" / "250pcs" → "250 pcs"
+    text = re.sub(r'(\d+)\s*(pcs|nos|pieces|pc|units|meters|mtr|kgs?)\b',
+                  lambda m: f"{m.group(1)} {m.group(2).lower()}", text, flags=re.IGNORECASE)
+    # "x250" / "X250" → "250 pcs"
+    text = re.sub(r'\bx(\d+)\b', r'\1 pcs', text, flags=re.IGNORECASE)
+    # "AYA" / "AAYA" / "aya" at end or anywhere → normalise to "aaya"
+    text = re.sub(r'\b(aya|aaya|aaaya)\b', 'aaya', text, flags=re.IGNORECASE)
+    # "SE AYA" / "se aya" → "se aaya" (supplier signal)
+    text = re.sub(r'\bse\s+aaya\b', 'se aaya', text, flags=re.IGNORECASE)
+    return text
+
+
 def parse_message(user_text: str, sender_name: str) -> dict:
     """
     Send user message to Groq Llama3-70b.
@@ -83,7 +100,7 @@ def parse_message(user_text: str, sender_name: str) -> dict:
         "max_tokens": 600,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"{user_text}\n(sent by: {sender_name})"}
+            {"role": "user", "content": f"{_preprocess(user_text)}\n(sent by: {sender_name})"}
         ]
     }
     headers = {
@@ -102,11 +119,73 @@ def parse_message(user_text: str, sender_name: str) -> dict:
         # Strip markdown backticks if model adds them despite instructions
         raw = raw.strip("```json").strip("```").strip()
         result = json.loads(raw)
-        # Always run sanitization — catches Groq mistakes regardless of prompt
-        return _sanitize_parsed(result)
+        result = _sanitize_parsed(result)
+        # If Groq returns unknown, try Python fallback before giving up
+        if result.get("intent") == "unknown":
+            fallback = _python_fallback(user_text)
+            if fallback:
+                logger.info(f"Python fallback rescued unknown intent → {fallback['intent']}")
+                return fallback
+        return result
     except json.JSONDecodeError as e:
         logger.error(f"Groq JSON parse error: {e} | raw: {raw}")
         return {"intent": "unknown", "message": f"Parse error"}
     except Exception as e:
         logger.error(f"Groq API error: {e}")
         return {"intent": "unknown", "message": f"Groq error: {str(e)}"}
+
+
+# ── Structure/PVC product brand name map (for Python-level fallback) ──────────
+_STRUCTURE_BRANDS = [
+    "mid clamp", "end clamp", "gp leg", "gp rafter", "gp purlin",
+    "gp c channel", "base plate", "earthing set", "nut bolt",
+    "12x40 nut bolt", "bend", "tee", "elow", "mc4 connector",
+    "25mm upvc", "flexible pipe",
+]
+
+def _python_fallback(user_text: str) -> dict | None:
+    """
+    Last-resort parser for simple add_stock / check_stock messages that Groq
+    returns 'unknown' for. Handles "PRODUCT QTY SUPPLIER SE AYA" patterns.
+    """
+    text = _preprocess(user_text).lower().strip()
+
+    # Detect add_stock signal words
+    add_signals = ["aaya", "se aaya", "from ", "aya hai", "aaya hai", "aa gaya", "mila"]
+    is_add = any(s in text for s in add_signals)
+
+    # Detect check_stock signal words
+    check_signals = ["kitna", "stock", "hai kitna", "kitne", "check", "batao", "bata"]
+    is_check = any(s in text for s in check_signals)
+
+    if not is_add and not is_check:
+        return None
+
+    # Try to match a known structure/PVC brand
+    matched_brand = None
+    for b in _STRUCTURE_BRANDS:
+        if b in text:
+            matched_brand = b.title()
+            break
+    if not matched_brand:
+        return None
+
+    if is_check:
+        return {"intent": "check_stock", "items": [{"brand": matched_brand, "spec": "", "type": ""}]}
+
+    # Extract quantity (e.g. "250 pcs", "250")
+    qty_match = re.search(r'(\d+)\s*(?:pcs?|nos?|pieces?|units?)?', text)
+    qty = int(qty_match.group(1)) if qty_match else 0
+
+    # Extract party from "X se aaya" or "from X"
+    party = ""
+    m = re.search(r'(?:from\s+|(\w[\w\s]+?)\s+se\s+aaya)', text)
+    if m:
+        party = (m.group(1) or re.search(r'from\s+(\w[\w\s]+)', text).group(1) if re.search(r'from\s+(\w[\w\s]+)', text) else "").strip().title()
+
+    logger.info(f"Python fallback matched: add_stock brand={matched_brand} qty={qty} party={party}")
+    return {
+        "intent": "add_stock",
+        "party": party,
+        "items": [{"brand": matched_brand, "spec": "", "type": "", "quantity": qty}]
+    }

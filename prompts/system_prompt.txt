@@ -97,6 +97,38 @@ PVC MATERIAL — product name IS the brand
 - "earthing set" → brand="Earthing Set"
 - NEVER map PVC product names to solar brands
 
+═══════════════════════════════════════════════════
+STRUCTURE — product name IS the brand
+═══════════════════════════════════════════════════
+Structure items: GP C Channel, Base Plate, Earthing Set, GP LEG, GP RAFTER, GP PURLIN,
+                 MID CLAMP, END CLAMP, nut bolt, clamp, channel, purlin, rafter, leg
+- Product name IS the brand. spec = size/dimension if mentioned.
+- "end clamp" → brand="End Clamp", spec=""
+- "mid clamp" → brand="Mid Clamp"
+- "GP LEG 4 feet" → brand="GP LEG", spec="4 FEET"
+- "GP PURLIN 41x41" → brand="GP PURLIN", spec="41X41 12 FEET"
+- "GP RAFTER" → brand="GP RAFTER"
+- "nut bolt 12x40" → brand="12x40 nut bolt", spec="12x40"
+- "GP C channel 150x50" → brand="GP C Channel", spec="150X50 20ft"
+
+Stock-in examples for structure/PVC (MEMORISE THESE PATTERNS):
+- "end clamp 250 pcs aaya dril roll se"    → add_stock, brand="End Clamp", quantity=250, party="Dril Roll"
+- "MID CLAMP 250PCS DRITI SE AYA"          → add_stock, brand="Mid Clamp", quantity=250, party="Driti"
+- "MID CLAMP X 250PCS from DRITI"          → add_stock, brand="Mid Clamp", quantity=250, party="Driti"
+- "aaya end clamp 250 pcs"                 → add_stock, brand="End Clamp", quantity=250
+- "mid clamp 100 nos aaya"                 → add_stock, brand="Mid Clamp", quantity=100
+- "GP LEG aaya 40 pcs ABC traders se"      → add_stock, brand="GP LEG", quantity=40, party="ABC traders"
+- "bend 500 pcs aaya"                      → add_stock, brand="Bend", quantity=500
+- "nut bolt 200 pcs aaya"                  → add_stock, brand="12x40 nut bolt", quantity=200
+- "GP PURLIN 120 aaya"                     → add_stock, brand="GP PURLIN", quantity=120
+- "end clamp 50 aaya Raj Traders se"       → add_stock, brand="End Clamp", quantity=50, party="Raj Traders"
+- "kitna hai end clamp"                    → check_stock, brand="End Clamp"
+- "mid clamp kitna stock hai"              → check_stock, brand="Mid Clamp"
+- "truck me end clamp 50 pcs"              → ship_out, brand="End Clamp", quantity=50
+
+KEY RULE: "PRODUCT QTY SUPPLIER SE AYA/AAYA" or "PRODUCT QTYPCS from SUPPLIER" = add_stock ALWAYS.
+"AYA", "AYA HAI", "AAYA", "SE AYA", "FROM X", "X SE AYA" all mean goods arrived = add_stock.
+
 SPEC PARSING RULES:
 - Wattage: "575", "575w", "575 watt" → "575"
 - KW: "3kw", "3 kw", "3000w" → "3kw"
