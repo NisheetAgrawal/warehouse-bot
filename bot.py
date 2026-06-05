@@ -144,7 +144,8 @@ async def _handle_check_stock(update, parsed, context):
             f"Stock: *{qty} {unit}* {status}\n"
             f"Rate: {rate_str}"
         )
-    await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
+    if lines:
+        await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
 
 
 # ── Add stock ────────────────────────────────────────────────────
@@ -178,11 +179,12 @@ async def _handle_add_stock(update, parsed, sender, context):
         else:
             lines.append(f"❌ {result['error']}")
 
-    party_line = f"\n🏪 Supplier: *{party}*" if party else ""
-    await update.message.reply_text(
-        f"📦 *Stock Updated:*{party_line}\n\n" + "\n\n".join(lines),
-        parse_mode="Markdown"
-    )
+    if lines:
+        party_line = f"\n🏪 Supplier: *{party}*" if party else ""
+        await update.message.reply_text(
+            f"📦 *Stock Updated:*{party_line}\n\n" + "\n\n".join(lines),
+            parse_mode="Markdown"
+        )
 
 
 # ── Ship out ─────────────────────────────────────────────────────
@@ -450,7 +452,8 @@ async def _handle_add_product(update_or_query, parsed, sender, context):
         else:
             lines.append(f"❌ {result.get('error', 'Error')}")
 
-    await msg.reply_text("\n\n".join(lines), parse_mode="Markdown")
+    if lines:
+        await msg.reply_text("\n\n".join(lines), parse_mode="Markdown")
 
 
 # ── Product suggestion helpers ───────────────────────────────────
