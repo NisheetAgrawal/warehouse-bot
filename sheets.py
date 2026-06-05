@@ -610,6 +610,10 @@ def add_new_product(category: str, brand: str, spec: str, type_: str, operator: 
         {"range": f"B{target_row}:I{target_row}", "values": [new_row]},
     ])
 
+    # Invalidate catalog cache so the new product is visible immediately
+    global _catalog_ts
+    _catalog_ts = 0.0
+
     return {"success": True, "brand": brand, "spec": spec, "type": type_,
             "category": target_cat, "unit": unit, "row": target_row,
             "quantity": qty, "product_id": product_id}
