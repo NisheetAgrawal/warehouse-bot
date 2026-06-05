@@ -263,6 +263,12 @@ async def _execute_ship_out(update_or_query, context, items, vehicle_no, party, 
             text="❌ *Shipment fail:*\n" + "\n".join(pre_errors), parse_mode="Markdown")
         return
 
+    # Warn about items that couldn't ship, but continue with the rest
+    if pre_errors:
+        await context.bot.send_message(chat_id=chat_id,
+            text="⚠️ *Kuch items skip kiye (kam stock):*\n" + "\n".join(pre_errors),
+            parse_mode="Markdown")
+
     # Generate the PDF now — before any stock change
     try:
         pdf_items = [{"brand": r["brand"], "spec": r["spec"], "type": r["type"],

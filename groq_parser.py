@@ -3,6 +3,7 @@ import json
 import os
 import re
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +173,57 @@ def _python_fallback(user_text: str):
             matched_pid = p["product_id"]
             best_len    = len(brand_low)
 
+    if not matched and not is_ship:
+        return None
+
+    # ── Multi-line message: parse each line for its own product+qty ───────────
+    lines = [l.strip() for l in user_text.strip().split('\n') if l.strip()]
+    is_multiline = len(lines) > 2
+
+    vehicle_no = "NOT PROVIDED"
+    party      = ""
+    items      = []
+
+    if is_multiline:
+        for line in lines:
+            line_pre = _preprocess(line)
+            line_low = line_pre.lower()
+
+            # Vehicle line
+            vm = re.search(r'\bVEHICLE\s+(\S+)', line_pre, re.IGNORECASE)
+            if vm:
+                vehicle_no = vm.group(1).upper()
+                continue
+
+            # Party line (contains "ko gaya/ko gya/le gaya")
+            if any(s in line_low for s in ["ko gaya", "ko gya", "le gaya", "le gya"]):
+                party = re.sub(r'\s*(ko gaya|ko gya|le gaya|le gya).*', '', line_pre,
+                               flags=re.IGNORECASE).strip().title()
+                continue
+
+            # Match product from catalog
+            best_brand, best_pid, best_len = None, "", 0
+            for p in catalog:
+                b = p["brand"].lower()
+                if b in line_low and len(b) > best_len:
+                    best_brand, best_pid, best_len = p["brand"], p["product_id"], len(b)
+
+            if best_brand:
+                qty = _extract_qty(line_low)
+                items.append({"brand": best_brand, "spec": "", "type": "",
+                              "quantity": qty, "product_id": best_pid})
+
+        if not items:
+            return None
+
+        if is_ship:
+            logger.info(f"Multi-line fallback ship_out: {len(items)} items, party={party}, vehicle={vehicle_no}")
+            return {"intent": "ship_out", "vehicle_no": vehicle_no,
+                    "party": party, "operator": None, "items": items}
+        logger.info(f"Multi-line fallback add_stock: {len(items)} items, party={party}")
+        return {"intent": "add_stock", "party": party, "items": items}
+
+    # ── Single-line fallback ──────────────────────────────────────────────────
     if not matched:
         return None
 
@@ -185,22 +237,15 @@ def _python_fallback(user_text: str):
 
     if is_ship:
         logger.info(f"Fallback ship_out: {matched} ({matched_pid}) qty={qty} party={party}")
-        return {
-            "intent":     "ship_out",
-            "vehicle_no": "NOT PROVIDED",
-            "party":      party,
-            "operator":   None,
-            "items":      [{"brand": matched, "spec": "", "type": "",
-                            "quantity": qty, "product_id": matched_pid}]
-        }
+        return {"intent": "ship_out", "vehicle_no": "NOT PROVIDED", "party": party,
+                "operator": None,
+                "items": [{"brand": matched, "spec": "", "type": "",
+                           "quantity": qty, "product_id": matched_pid}]}
 
     logger.info(f"Fallback add_stock: {matched} ({matched_pid}) qty={qty} party={party}")
-    return {
-        "intent": "add_stock",
-        "party":  party,
-        "items":  [{"brand": matched, "spec": "", "type": "",
-                    "quantity": qty, "product_id": matched_pid}]
-    }
+    return {"intent": "add_stock", "party": party,
+            "items": [{"brand": matched, "spec": "", "type": "",
+                       "quantity": qty, "product_id": matched_pid}]}
 
 
 def parse_message(user_text: str, sender_name: str) -> dict:
@@ -232,29 +277,43 @@ def parse_message(user_text: str, sender_name: str) -> dict:
     }
 
     raw = ""
-    try:
-        resp = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=headers, json=payload, timeout=15
-        )
-        resp.raise_for_status()
-        raw = resp.json()["choices"][0]["message"]["content"].strip()
-        raw = raw.strip("```json").strip("```").strip()
-        result = json.loads(raw)
-        result = _sanitize_parsed(result)
+    for attempt in range(2):   # retry once on 429
+        try:
+            resp = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=headers, json=payload, timeout=15
+            )
+            if resp.status_code == 429:
+                logger.warning(f"Groq 429 rate limit (attempt {attempt+1})")
+                if attempt == 0:
+                    time.sleep(2)
+                    continue
+                break   # both attempts failed → go to fallback
+            resp.raise_for_status()
+            raw = resp.json()["choices"][0]["message"]["content"].strip()
+            raw = raw.strip("```json").strip("```").strip()
+            result = json.loads(raw)
+            result = _sanitize_parsed(result)
 
-        if result.get("intent") == "unknown":
-            fallback = _python_fallback(user_text)
-            if fallback:
-                logger.info(f"Fallback rescued Groq unknown → {fallback['intent']}")
-                return fallback
-        return result
+            if result.get("intent") == "unknown":
+                fallback = _python_fallback(user_text)
+                if fallback:
+                    logger.info(f"Fallback rescued Groq unknown → {fallback['intent']}")
+                    return fallback
+            return result
 
-    except (json.JSONDecodeError, Exception) as e:
-        logger.error(f"Groq error: {e} | raw: {raw!r}")
-        # Always try Python fallback before returning unknown
-        fallback = _python_fallback(user_text)
-        if fallback:
-            logger.info(f"Fallback rescued Groq error → {fallback['intent']}")
-            return fallback
-        return {"intent": "unknown", "message": str(e)}
+        except json.JSONDecodeError as e:
+            logger.error(f"Groq JSON error: {e} | raw: {raw!r}")
+            break
+        except Exception as e:
+            logger.error(f"Groq error: {e}")
+            if attempt == 0 and "429" in str(e):
+                time.sleep(2); continue
+            break
+
+    # All Groq attempts failed — use Python fallback
+    fallback = _python_fallback(user_text)
+    if fallback:
+        logger.info(f"Fallback rescued Groq failure → {fallback['intent']}")
+        return fallback
+    return {"intent": "unknown", "message": "Groq unavailable"}
