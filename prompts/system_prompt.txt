@@ -137,6 +137,29 @@ Ship-out examples:
 - "end clamp 50 Raj ko gaya"             → ship_out, brand="End Clamp", quantity=50, party="Raj"
 - "mid clamp 100 Ramesh le gaya"         → ship_out, brand="Mid Clamp", quantity=100, party="Ramesh"
 
+MULTI-LINE TRUCK LOADING FORMAT (most common real-world format):
+Each line = one product. Last lines = vehicle number and customer name.
+Example message:
+  GP LEG 4 FEET 40 pcs
+  GP LEG 6 FEET 40 pcs
+  GP RAFTER 14 FEET 40 pcs
+  GP PURLIN 41X41 12 FEET 120 pcs
+  MID CLAMP 250 pcs
+  END CLAMP 250 pcs
+  12X40 NUT BOLT 20
+  HAVELLS AC CABLE 500 mtr
+  EASYONE DC CABLE 1500 mtr
+  PVC PIPE 500 pcs
+  Waaree DCDB 1-6 1 pcs
+  VEHICLE CG04PR9826
+  PRAMOD KUMAR SHARMA KO GAYA
+
+→ intent=ship_out, vehicle_no="CG04PR9826", party="Pramod Kumar Sharma"
+→ items: all products listed above, each with brand+spec+qty from catalog
+→ "VEHICLE XXXXXXX" line = vehicle_no
+→ "PERSON NAME KO GAYA" = party name, confirms ship_out intent
+→ Parse EVERY line as a separate item — do NOT skip any line
+
 SPEC PARSING RULES:
 - Wattage: "575", "575w", "575 watt" → "575"
 - KW: "3kw", "3 kw", "3000w" → "3kw"

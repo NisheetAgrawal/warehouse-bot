@@ -53,10 +53,31 @@ def _sanitize_parsed(parsed: dict) -> dict:
 
 def _preprocess(text: str) -> str:
     """Normalise input before sending to Groq."""
-    # "250PCS" → "250 pcs"  (but NOT "12x40" — skip NxM product codes)
-    text = re.sub(r'(?<!\d[xX])(\d+)\s*(pcs|nos|pieces|pc|units|meters|mtr|kgs?)\b',
+    # "GAADI NO-CG04PR9826" → "VEHICLE CG04PR9826" (standard vehicle tag)
+    text = re.sub(r'gaadi\s*no[\s\-:]+(\S+)', r'VEHICLE \1', text, flags=re.IGNORECASE)
+    text = re.sub(r'vehicle\s*no[\s\-:]+(\S+)', r'VEHICLE \1', text, flags=re.IGNORECASE)
+    text = re.sub(r'truck\s*no[\s\-:]+(\S+)',   r'VEHICLE \1', text, flags=re.IGNORECASE)
+
+    # "PRODUCT-40PCS" / "PRODUCT- 250PCS" → "PRODUCT 40 pcs"
+    # (dash used as separator before qty+unit, e.g. "GP LEG 4FEET-40PCS")
+    text = re.sub(r'\s*-\s*(\d+)\s*(pcs|nos|pc|pieces?|mtr|meters?|kgs?|units?)\b',
+                  lambda m: f" {m.group(1)} {m.group(2).lower()}", text, flags=re.IGNORECASE)
+    # "- 20" at end of line (qty with no unit, e.g. "12X40 NUTBOLT- 20")
+    text = re.sub(r'\s*-\s*(\d+)\s*$', r' \1', text, flags=re.MULTILINE)
+
+    # "4FEET" / "14FEET" → "4 FEET" (number glued to dimension word)
+    text = re.sub(r'(\d+)(feet|mtr|meter|kg|cm|mm)\b', r'\1 \2', text, flags=re.IGNORECASE)
+
+    # "GPLEG" → "GP LEG", "NUTBOLT" → "NUT BOLT"
+    text = re.sub(r'\bGPLEG\b', 'GP LEG', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bNUTBOLT\b', 'NUT BOLT', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bWAARRE\b', 'Waaree', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bWARRE\b',  'Waaree', text, flags=re.IGNORECASE)
+
+    # "250PCS" / "500MTR" → "250 pcs" / "500 mtr"  (no dash, just glued)
+    text = re.sub(r'(\d+)\s*(pcs|nos|pieces?|pc|units?|mtr|meters?|kgs?)\b',
                   lambda m: f"{m.group(1)} {m.group(2).lower()}", text, flags=re.IGNORECASE)
-    # "x250" / "X250" at word boundary → "250 pcs"
+    # "x250" at word boundary → "250 pcs"
     text = re.sub(r'\bx(\d+)\b', r'\1 pcs', text, flags=re.IGNORECASE)
     # Normalise "AYA" / "aya" → "aaya"
     text = re.sub(r'\b(aya|aaya|aaaya)\b', 'aaya', text, flags=re.IGNORECASE)
@@ -199,7 +220,7 @@ def parse_message(user_text: str, sender_name: str) -> dict:
     payload = {
         "model": "llama-3.3-70b-versatile",
         "temperature": 0,
-        "max_tokens": 700,
+        "max_tokens": 1200,
         "messages": [
             {"role": "system", "content": full_prompt},
             {"role": "user", "content": f"{_preprocess(user_text)}\n(sent by: {sender_name})"}
