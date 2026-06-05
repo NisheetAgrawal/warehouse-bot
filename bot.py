@@ -448,7 +448,8 @@ async def _handle_add_product(update_or_query, parsed, sender, context):
         if result["success"]:
             preview  = " ".join(filter(None, [brand, spec, type_]))
             qty_line = f"📦 {init_qty} {unit}" if init_qty > 0 else "Qty 0 — update karo jab maal aaye"
-            lines.append(f"✅ *{preview}*\n📁 {category} | {qty_line}")
+            pid_line = f"\n🔖 ID: `{result['product_id']}`" if result.get("product_id") else ""
+            lines.append(f"✅ *{preview}*\n📁 {category} | {qty_line}{pid_line}")
         else:
             lines.append(f"❌ {result.get('error', 'Error')}")
 

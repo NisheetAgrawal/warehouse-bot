@@ -432,13 +432,12 @@ def add_new_product(category: str, brand: str, spec: str, type_: str, operator: 
     section_end = None   # 1-based row number of last product row in section
     brand_end   = None   # 1-based row number of last matching-brand row in section
 
+    # ── Find last product row in the target section ───────────────────────────
     for i, row in enumerate(all_rows):
-        # col A = product_id (empty for headers), col B = Brand/section label
         pid   = str(row[0]).strip() if row else ""
-        col_b = str(row[1]).strip() if len(row) > 1 else ""   # Brand or section label
+        col_b = str(row[1]).strip() if len(row) > 1 else ""
         combined = col_b.lower()
 
-        # Detect start of our target category section (header rows have empty product_id)
         if not pid and target_cat.lower() in combined:
             in_section = True
             section_end = None
@@ -448,11 +447,11 @@ def add_new_product(category: str, brand: str, spec: str, type_: str, operator: 
         if not in_section:
             continue
 
-        # Another major section started — stop
-        if not pid and any(
+        # Stop when the next major section header is hit
+        if not pid and combined.strip() and any(
             h.lower() in combined
             for h in ["solar panel", "inverter", "acdb", "cable", "pvc material", "structure"]
-        ) and combined.strip() and combined != target_cat.lower():
+        ) and target_cat.lower() not in combined:
             break
 
         if _is_product_row(row):
@@ -460,48 +459,67 @@ def add_new_product(category: str, brand: str, spec: str, type_: str, operator: 
             if brand_norm in _normalize(col_b) or _normalize(col_b) in brand_norm:
                 brand_end = i + 1
 
-    # Target row = after brand group or after section
-    base_row = brand_end if brand_end is not None else section_end
-    if base_row is not None:
-        # Find first truly empty row at or after base_row + 1
-        target_row = base_row + 1
-        while target_row <= len(all_rows):
-            r = all_rows[target_row - 1]
-            if not any(str(c).strip() for c in r[:9]):
-                break
-            target_row += 1
-    else:
-        # No section found — append after last non-empty row
-        target_row = len(all_rows) + 1
-        for i in range(len(all_rows) - 1, -1, -1):
-            if any(str(c).strip() for c in all_rows[i][:9]):
-                target_row = i + 2
-                break
+    # Insert immediately after brand group (preferred) or after section
+    insert_after = brand_end if brand_end is not None else section_end
+    if insert_after is None:
+        # Section not found — append to end
+        insert_after = len(all_rows)
 
-    qty    = init_qty if init_qty > 0 else 0
-    if qty == 0:
-        status = "No Stock"
-    elif qty < 5:
-        status = "Low Stock"
-    else:
-        status = "In Stock"
-    # Write to cols B:I (col A = product_id left blank — assigned later)
-    new_row = [brand, spec, type_, qty, "", "", status, unit]
-    ws.update(f"B{target_row}:I{target_row}", [new_row])
+    target_row = insert_after + 1   # new row goes HERE (1-based)
 
-    # Copy formatting from the nearest PRODUCT row above (skip headers)
+    # ── Auto-generate product_id ──────────────────────────────────────────────
+    CAT_CODES = {
+        "solar panel": "SP", "inverter": "INV", "acdb": "ACDB", "dcdb": "DCDB",
+        "cable": "CAB", "pvc material": "PVC", "structure": "STR",
+    }
+    BRAND_CODES = {
+        "waaree":"WAR","adani":"ADN","citizen":"CTZ","polycab":"PCB",
+        "deye":"DEY","microtek":"MTK","eastman":"EST","havells":"HVL",
+        "easyone":"EAS","waacab":"WCB",
+    }
+    cat_code   = CAT_CODES.get(cat_key, "GEN")
+    brand_code = BRAND_CODES.get(brand.strip().lower(), "GEN")
+
+    # Count existing product_ids with this prefix to get next number
+    prefix = f"{cat_code}-{brand_code}-"
+    existing_nums = []
+    for row in all_rows:
+        pid = str(row[0]).strip()
+        if pid.startswith(prefix):
+            try:
+                existing_nums.append(int(pid.split("-")[-1]))
+            except ValueError:
+                pass
+    next_num   = max(existing_nums, default=0) + 1
+    product_id = f"{prefix}{next_num:03d}"
+
+    # ── Insert a blank row at target_row (pushes everything below down) ───────
     try:
         from config import GOOGLE_SHEET_ID
         spreadsheet = _client().open_by_key(GOOGLE_SHEET_ID)
-        sheet_id = ws.id
+        sheet_id    = ws.id
 
-        # Find nearest product row above target (col A is a digit)
+        # Find a product row above to copy formatting from
         copy_from = None
-        for i in range(target_row - 2, -1, -1):
-            if i < len(all_rows) and str(all_rows[i][0]).strip().isdigit():
-                copy_from = i + 1  # 1-based
+        for i in range(insert_after - 1, -1, -1):
+            if i < len(all_rows) and str(all_rows[i][0]).strip():
+                copy_from = i + 1   # 1-based
                 break
 
+        # Insert the new row
+        spreadsheet.batch_update({"requests": [{
+            "insertDimension": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "dimension": "ROWS",
+                    "startIndex": target_row - 1,
+                    "endIndex": target_row
+                },
+                "inheritFromBefore": True   # copies format from the row above
+            }
+        }]})
+
+        # If we have a source row for formatting, explicitly copy it
         if copy_from:
             spreadsheet.batch_update({"requests": [{
                 "copyPaste": {
@@ -509,26 +527,38 @@ def add_new_product(category: str, brand: str, spec: str, type_: str, operator: 
                         "sheetId": sheet_id,
                         "startRowIndex": copy_from - 1,
                         "endRowIndex": copy_from,
-                        "startColumnIndex": 1,    # col B (skip product_id in col A)
-                        "endColumnIndex": 9       # cols B-I (8 data cols)
+                        "startColumnIndex": 0,
+                        "endColumnIndex": 9
                     },
                     "destination": {
                         "sheetId": sheet_id,
                         "startRowIndex": target_row - 1,
                         "endRowIndex": target_row,
-                        "startColumnIndex": 1,
+                        "startColumnIndex": 0,
                         "endColumnIndex": 9
                     },
                     "pasteType": "PASTE_FORMAT"
                 }
             }]})
-            # Re-write data after format copy
-            ws.update(f"B{target_row}:I{target_row}", [new_row])
+
     except Exception as e:
-        logger.warning(f"Format copy failed (non-critical): {e}")
+        logger.warning(f"Row insert/format failed: {e}")
+
+    # ── Write data ────────────────────────────────────────────────────────────
+    qty = init_qty if init_qty > 0 else 0
+    if qty == 0:   status = "No Stock"
+    elif qty < 5:  status = "Low Stock"
+    else:          status = "In Stock"
+
+    new_row = [brand, spec, type_, qty, "", "", status, unit]
+    ws.batch_update([
+        {"range": f"A{target_row}", "values": [[product_id]]},
+        {"range": f"B{target_row}:I{target_row}", "values": [new_row]},
+    ])
 
     return {"success": True, "brand": brand, "spec": spec, "type": type_,
-            "category": target_cat, "unit": unit, "row": target_row, "quantity": qty}
+            "category": target_cat, "unit": unit, "row": target_row,
+            "quantity": qty, "product_id": product_id}
 
 
 def get_full_stock() -> list:
