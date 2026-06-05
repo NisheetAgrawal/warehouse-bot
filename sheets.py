@@ -70,34 +70,35 @@ def _get_or_create_transactions_sheet():
     spreadsheet = _client().open_by_key(GOOGLE_SHEET_ID)
     try:
         ws = spreadsheet.worksheet("Transacation")
-        if ws.row_values(1) != TRANSACTION_HEADERS:
-            ws.update("A1", [TRANSACTION_HEADERS])
+        # Row 1 now has product_id in col A; actual headers start at col B
+        current_headers = ws.row_values(1)
+        # If col B onwards don't match expected headers, rewrite (but keep product_id in A)
+        if current_headers[1:len(TRANSACTION_HEADERS)+1] != TRANSACTION_HEADERS:
+            ws.update("B1", [TRANSACTION_HEADERS])
         return ws
     except gspread.WorksheetNotFound:
-        ws = spreadsheet.add_worksheet(title="Transacation", rows=1000, cols=9)
-        ws.append_row(TRANSACTION_HEADERS)
+        ws = spreadsheet.add_worksheet(title="Transacation", rows=1000, cols=11)
+        ws.update("A1", [["product_id"] + TRANSACTION_HEADERS])
         return ws
 
 
 def _is_product_row(row: list) -> bool:
     """
+    Sheet now has product_id as col A (index 0).
     A product row has:
-    - Column A (index 0): a digit (1, 2, 3...) — section/category headers use Roman numerals or letters
-    - Column B (index 1): non-empty brand/product name that is not a known header keyword
-    - Column C (index 2): non-empty spec value that is not a header keyword
-
-    This approach works for ANY brand added directly to the sheet —
-    no hardcoded brand list needed.
+    - Col B (index 1): Sr.No — must be a digit (1, 2, 3...)
+    - Col C (index 2): non-empty brand/product name, not a known header keyword
+    - Col D (index 3): spec value (may be empty for cables/PVC)
     """
     if len(row) < 3:
         return False
 
-    col_a    = str(row[0]).strip()
-    brand_raw = str(row[1]).strip()
-    spec_raw  = str(row[2]).strip()
+    col_b     = str(row[1]).strip()   # Sr.No
+    brand_raw = str(row[2]).strip()   # Brand
+    spec_raw  = str(row[3]).strip() if len(row) > 3 else ""  # Spec
 
-    # Col A must be a number to be a product row
-    if not col_a.isdigit():
+    # Sr.No must be a number
+    if not col_b.isdigit():
         return False
 
     if not brand_raw:
@@ -106,10 +107,8 @@ def _is_product_row(row: list) -> bool:
     brand_lower = brand_raw.lower().strip()
     spec_lower  = spec_raw.lower().strip()
 
-    # Skip known category/section headers in brand column
     if brand_lower in HEADER_KEYWORDS:
         return False
-    # Skip if spec column has a header keyword (but allow empty spec — cables/PVC have no spec)
     if spec_lower in HEADER_SPEC_KEYWORDS:
         return False
 
@@ -173,11 +172,11 @@ def find_product_row(brand: str, spec: str, type_: str):
         for i, row in enumerate(all_rows):
             if not _is_product_row(row):
                 continue
-            row_brand = _normalize(row[1])
+            row_brand = _normalize(row[2])        # col C = Brand
             if brand_q_norm not in row_brand and row_brand not in brand_q_norm:
                 continue
-            row_spec = str(row[2]).strip() if len(row) > 2 else ""
-            row_type = str(row[3]).strip() if len(row) > 3 else ""
+            row_spec = str(row[3]).strip() if len(row) > 3 else ""   # col D
+            row_type = str(row[4]).strip() if len(row) > 4 else ""   # col E
             if _specs_match(row_spec, row_type, spec, type_):
                 return i + 1, row
         return None, None
@@ -220,12 +219,12 @@ def get_all_products_by_brand(brand: str) -> list:
     for i, row in enumerate(all_rows):
         if not _is_product_row(row):
             continue
-        row_brand = _normalize(row[1])
+        row_brand = _normalize(row[2])            # col C = Brand
         if brand_q in row_brand or row_brand in brand_q:
-            qty = int(row[4]) if len(row) > 4 and str(row[4]).isdigit() else 0
+            qty = int(row[5]) if len(row) > 5 and str(row[5]).isdigit() else 0
             results.append({
-                "brand": row[1].strip(), "spec": row[2].strip(),
-                "type": row[3].strip(), "quantity": qty, "row_idx": i + 1, "score": 10
+                "brand": row[2].strip(), "spec": row[3].strip(),
+                "type": row[4].strip(), "quantity": qty, "row_idx": i + 1, "score": 10
             })
     return results
 
@@ -248,21 +247,18 @@ def search_similar_products(brand: str, spec: str, type_: str, top_n: int = 4) -
     for i, row in enumerate(all_rows):
         if not _is_product_row(row):
             continue
-        row_brand = _normalize(row[1])
-        row_spec  = _normalize(str(row[2])).replace("w", "").replace("kw", "")
-        row_type  = _normalize(str(row[3])).replace("-", "")
+        row_brand = _normalize(row[2])            # col C = Brand
+        row_spec  = _normalize(str(row[3])).replace("w", "").replace("kw", "")  # col D
+        row_type  = _normalize(str(row[4])).replace("-", "")                     # col E
 
-        # Brand score — DOMINANT: if brand doesn't match at all, skip row
-        # Special case: "Polycab ACDB" should match rows with brand="ACDB"
         acdb_fallback = any(kw in brand_q for kw in ["acdb", "dcdb"]) and (
             "acdb" in row_brand or "dcdb" in row_brand
         )
         if brand_q in row_brand or row_brand in brand_q or acdb_fallback:
             brand_score = 10
         else:
-            continue   # Wrong brand → never suggest
+            continue
 
-        # Spec match scoring
         spec_score = 0
         if spec_q and spec_q == row_spec:
             spec_score = 3
@@ -271,15 +267,14 @@ def search_similar_products(brand: str, spec: str, type_: str, top_n: int = 4) -
         elif spec_q and len(spec_q) >= 2 and row_spec.startswith(spec_q[:2]):
             spec_score = 1
 
-        # Type match scoring
         type_score = 1 if (not type_q or not row_type or type_q == row_type) else 0
 
         score = brand_score + spec_score + type_score
-        qty = int(row[4]) if len(row) > 4 and str(row[4]).isdigit() else 0
+        qty = int(row[5]) if len(row) > 5 and str(row[5]).isdigit() else 0  # col F
         scored.append({
-            "brand":    row[1].strip(),
-            "spec":     row[2].strip(),
-            "type":     row[3].strip(),
+            "brand":    row[2].strip(),
+            "spec":     row[3].strip(),
+            "type":     row[4].strip(),
             "quantity": qty,
             "row_idx":  i + 1,
             "score":    score
@@ -294,17 +289,17 @@ def get_stock(brand: str, spec: str, type_: str) -> dict:
     if row_idx is None:
         return {"found": False, "brand": brand, "spec": spec, "type": type_}
 
-    qty_raw = str(row[4]).strip() if len(row) > 4 else "0"
+    qty_raw = str(row[5]).strip() if len(row) > 5 else "0"   # col F = Quantity
     qty = int(qty_raw) if qty_raw.isdigit() else 0
-    rate   = row[5].strip() if len(row) > 5 else "N/A"
-    status = row[7].strip() if len(row) > 7 else ""
-    unit   = row[8].strip() if len(row) > 8 and row[8] else "nos"
+    rate   = row[6].strip() if len(row) > 6 else "N/A"       # col G = Rate
+    status = row[8].strip() if len(row) > 8 else ""           # col I = Stock Status
+    unit   = row[9].strip() if len(row) > 9 and row[9] else "nos"  # col J = Unit
 
     return {
         "found": True,
-        "brand": row[1].strip(),
-        "spec": row[2].strip(),
-        "type": row[3].strip(),
+        "brand": row[2].strip(),   # col C
+        "spec":  row[3].strip(),   # col D
+        "type":  row[4].strip(),   # col E
         "quantity": qty,
         "unit": unit,
         "rate": rate,
@@ -323,25 +318,23 @@ def update_quantity(row_idx: int, new_qty: int):
     else:
         status = "In Stock"
     try:
-        # Update qty (col E=5) and status (col H=8) together — single call
+        # Col F=qty, Col G=rate, Col H=total, Col I=status  (product_id now in col A)
         row = ws.row_values(row_idx)
-        rate_raw = row[5].strip() if len(row) > 5 else ""
+        rate_raw = row[6].strip() if len(row) > 6 else ""    # col G = Rate
         try:
             rate = float(str(rate_raw).replace(",", "").replace("₹", "").strip() or 0)
             total = int(new_qty * rate) if rate > 0 else ""
         except Exception:
             total = ""
-        # Build update: cols E (qty), G (total), H (status) in one batch
-        updates = [{"range": f"E{row_idx}", "values": [[new_qty]]},
-                   {"range": f"H{row_idx}", "values": [[status]]}]
+        updates = [{"range": f"F{row_idx}", "values": [[new_qty]]},   # col F = Qty
+                   {"range": f"I{row_idx}", "values": [[status]]}]    # col I = Status
         if total != "":
-            updates.append({"range": f"G{row_idx}", "values": [[total]]})
+            updates.append({"range": f"H{row_idx}", "values": [[total]]})  # col H = Total
         ws.batch_update(updates)
     except Exception as e:
-        # Last-resort: just try updating quantity alone — never crash the caller
         logger.warning(f"batch update failed, trying single cell: {e}")
         try:
-            ws.update_cell(row_idx, 5, new_qty)
+            ws.update_cell(row_idx, 6, new_qty)   # col F (1-indexed = 6)
         except Exception as e2:
             logger.error(f"update_quantity failed completely: {e2}")
 
@@ -354,8 +347,8 @@ def update_rate(brand: str, spec: str, type_: str, rate: int) -> dict:
     ws = _get_sheet("Stock")
     row_idx = info["row_idx"]
     qty = info["quantity"]
-    ws.update_cell(row_idx, 6, rate)                         # col F = Rate
-    ws.update_cell(row_idx, 7, qty * rate if qty else 0)     # col G = Total
+    ws.update_cell(row_idx, 7, rate)                          # col G = Rate  (shifted +1)
+    ws.update_cell(row_idx, 8, qty * rate if qty else 0)     # col H = Total (shifted +1)
     return {
         "success": True,
         "brand": info["brand"], "spec": info["spec"], "type": info["type"],
@@ -447,12 +440,13 @@ def add_new_product(category: str, brand: str, spec: str, type_: str, operator: 
     brand_end   = None   # 1-based row number of last matching-brand row in section
 
     for i, row in enumerate(all_rows):
-        cell_a = str(row[0]).strip()
-        cell_b = str(row[1]).strip() if len(row) > 1 else ""
-        combined = (cell_a + " " + cell_b).lower()
+        # With product_id in col A: col B (index 1) = Sr.No, col C (index 2) = Brand
+        cell_b = str(row[1]).strip() if len(row) > 1 else ""   # Sr.No / section header text
+        cell_c = str(row[2]).strip() if len(row) > 2 else ""   # Brand
+        combined = (cell_b + " " + cell_c).lower()
 
         # Detect start of our target category section
-        if target_cat.lower() in combined and not cell_a.isdigit():
+        if target_cat.lower() in combined and not cell_b.isdigit():
             in_section = True
             section_end = None
             brand_end   = None
@@ -462,18 +456,17 @@ def add_new_product(category: str, brand: str, spec: str, type_: str, operator: 
             continue
 
         # Another section started — stop
-        if not cell_a.isdigit() and any(
+        if not cell_b.isdigit() and any(
             h.lower() in combined
             for h in ["solar panel", "inverter", "acdb", "cable", "pvc material"]
         ) and combined.strip():
-            # Only break if this is truly a new major section (roman numeral or letter header)
-            if cell_a.upper() in ("I","II","III","IV","V","VI","A","B","C","D","E") or \
+            if cell_b.upper() in ("I","II","III","IV","V","VI","A","B","C","D","E") or \
                any(x in combined for x in ["solar panel","inverter","acdb/dcdb","iv. cable","v. pvc"]):
                 break
 
         if _is_product_row(row):
             section_end = i + 1   # 1-based
-            if brand_norm in _normalize(cell_b) or _normalize(cell_b) in brand_norm:
+            if brand_norm in _normalize(cell_c) or _normalize(cell_c) in brand_norm:
                 brand_end = i + 1
 
     # Target row = after brand group or after section
@@ -499,8 +492,10 @@ def add_new_product(category: str, brand: str, spec: str, type_: str, operator: 
     if section_end is not None:
         in_sec = False
         for row in all_rows:
-            combined = (str(row[0]) + " " + (str(row[1]) if len(row) > 1 else "")).lower()
-            if target_cat.lower() in combined and not str(row[0]).strip().isdigit():
+            col_b = str(row[1]).strip() if len(row) > 1 else ""
+            col_c = str(row[2]).strip() if len(row) > 2 else ""
+            combined = (col_b + " " + col_c).lower()
+            if target_cat.lower() in combined and not col_b.isdigit():
                 in_sec = True
                 sr_no  = 1
                 continue
@@ -514,8 +509,9 @@ def add_new_product(category: str, brand: str, spec: str, type_: str, operator: 
         status = "Low Stock"
     else:
         status = "In Stock"
+    # Write to cols B:J (leave col A = product_id blank; assigned manually or later)
     new_row = [sr_no, brand, spec, type_, qty, "", "", status, unit]
-    ws.update(f"A{target_row}:I{target_row}", [new_row])
+    ws.update(f"B{target_row}:J{target_row}", [new_row])
 
     # Copy formatting from the nearest PRODUCT row above (skip headers)
     try:
@@ -537,21 +533,21 @@ def add_new_product(category: str, brand: str, spec: str, type_: str, operator: 
                         "sheetId": sheet_id,
                         "startRowIndex": copy_from - 1,
                         "endRowIndex": copy_from,
-                        "startColumnIndex": 0,
-                        "endColumnIndex": 9
+                        "startColumnIndex": 1,    # col B onwards (skip product_id col)
+                        "endColumnIndex": 10      # cols B-J (9 data cols)
                     },
                     "destination": {
                         "sheetId": sheet_id,
                         "startRowIndex": target_row - 1,
                         "endRowIndex": target_row,
-                        "startColumnIndex": 0,
-                        "endColumnIndex": 9
+                        "startColumnIndex": 1,
+                        "endColumnIndex": 10
                     },
                     "pasteType": "PASTE_FORMAT"
                 }
             }]})
             # Re-write data after format copy
-            ws.update(f"A{target_row}:I{target_row}", [new_row])
+            ws.update(f"B{target_row}:J{target_row}", [new_row])
     except Exception as e:
         logger.warning(f"Format copy failed (non-critical): {e}")
 
@@ -573,12 +569,13 @@ def get_full_stock() -> list:
     results = []
 
     for row in all_rows:
-        col_a = str(row[0]).strip()
-        col_b = str(row[1]).strip() if len(row) > 1 else ""
-        combined = (col_a + " " + col_b).lower()
+        # col A (index 0) = product_id, col B (index 1) = Sr.No/header, col C (index 2) = Brand
+        col_b = str(row[1]).strip() if len(row) > 1 else ""   # Sr.No or section header text
+        col_c = str(row[2]).strip() if len(row) > 2 else ""   # Brand
+        combined = (col_b + " " + col_c).lower()
 
-        # Detect section header (non-digit col A with meaningful content)
-        if not col_a.isdigit() and col_b:
+        # Detect section header: col B is non-digit with section keyword
+        if not col_b.isdigit() and col_b:
             for sec in ["Solar Panel", "Inverter", "ACDB/DCDB", "Cable", "PVC Material", "Structure"]:
                 if sec.lower() in combined:
                     current_section = sec
@@ -588,15 +585,15 @@ def get_full_stock() -> list:
         if not _is_product_row(row):
             continue
 
-        qty_raw = str(row[4]).strip() if len(row) > 4 else "0"
+        qty_raw = str(row[5]).strip() if len(row) > 5 else "0"   # col F = Qty
         qty = int(qty_raw) if qty_raw.isdigit() else 0
-        unit = str(row[8]).strip() if len(row) > 8 and row[8] else "nos"
+        unit = str(row[9]).strip() if len(row) > 9 and row[9] else "nos"  # col J = Unit
 
         results.append({
             "section":  current_section,
-            "brand":    col_b,
-            "spec":     str(row[2]).strip() if len(row) > 2 else "",
-            "type":     str(row[3]).strip() if len(row) > 3 else "",
+            "brand":    col_c,
+            "spec":     str(row[3]).strip() if len(row) > 3 else "",   # col D
+            "type":     str(row[4]).strip() if len(row) > 4 else "",   # col E
             "quantity": qty,
             "unit":     unit,
         })
@@ -625,26 +622,27 @@ def get_party_summary(party_name: str) -> dict:
     sales     = []   # SHIP_OUT rows matching party
 
     for row in rows[1:]:
-        if len(row) < 10:
+        if len(row) < 11:
             continue
-        row_party = _normalize(str(row[9]))   # col J = Party
+        # product_id now in col A (index 0); data cols shifted +1
+        row_party = _normalize(str(row[10]))  # col K = Party
         if not row_party or party_norm not in row_party and row_party not in party_norm:
             continue
         try:
-            qty = int(str(row[4]).replace("-", "").strip() or 0)
+            qty = int(str(row[5]).replace("-", "").strip() or 0)   # col F = Qty Change
         except ValueError:
             qty = 0
         entry = {
-            "timestamp": row[0],
-            "type":      row[1],
-            "brand":     row[2],
-            "spec":      row[3],
+            "timestamp": row[1],   # col B
+            "type":      row[2],   # col C
+            "brand":     row[3],   # col D
+            "spec":      row[4],   # col E
             "qty":       qty,
-            "vehicle":   row[7],
+            "vehicle":   row[8],   # col I
         }
-        if row[1] == "ADD_IN":
+        if row[2] == "ADD_IN":
             purchases.append(entry)
-        elif row[1] == "SHIP_OUT":
+        elif row[2] == "SHIP_OUT":
             sales.append(entry)
 
     if not purchases and not sales:
@@ -674,7 +672,9 @@ def _log_transaction(type_, brand, spec, qty_change, before, after, vehicle_no, 
         ws = _get_or_create_transactions_sheet()
         from datetime import timezone, timedelta
         IST = timezone(timedelta(hours=5, minutes=30))
+        # Col A = product_id (blank for now), then transaction data from col B onwards
         ws.append_row([
+            "",   # product_id — blank; to be matched separately
             datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST"),
             type_, brand, spec,
             qty_change, before, after,
