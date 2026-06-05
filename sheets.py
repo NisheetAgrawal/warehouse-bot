@@ -6,6 +6,27 @@ import time
 
 logger = logging.getLogger(__name__)
 
+# ── Short-lived row cache (15 sec) — prevents re-reading sheet on every lookup ─
+_rows_cache: list  = []
+_rows_ts: float    = 0.0
+_ROWS_TTL: int     = 15
+
+def _get_all_rows() -> list:
+    """Return cached sheet rows (15-second TTL). One read per burst of operations."""
+    global _rows_cache, _rows_ts
+    if time.time() - _rows_ts < _ROWS_TTL and _rows_cache:
+        return _rows_cache
+    ws = _get_sheet("Stock")
+    if not ws:
+        return _rows_cache
+    _rows_cache = ws.get_all_values()
+    _rows_ts    = time.time()
+    return _rows_cache
+
+def _invalidate_rows_cache():
+    global _rows_ts
+    _rows_ts = 0.0
+
 # ── Product catalog cache (refreshed every 5 min) ─────────────────────────────
 _catalog_cache: list = []
 _catalog_ts: float   = 0.0
@@ -206,7 +227,7 @@ def find_product_row(brand: str, spec: str, type_: str, product_id: str = ""):
     if not ws:
         return None, None
 
-    all_rows = ws.get_all_values()
+    all_rows = _get_all_rows()
 
     # Fast path: direct product_id lookup (O(n) scan but exact match)
     if product_id:
@@ -260,7 +281,7 @@ def get_all_products_by_brand(brand: str) -> list:
     ws = _get_sheet("Stock")
     if not ws:
         return []
-    all_rows = ws.get_all_values()
+    all_rows = _get_all_rows()
     brand_q = _normalize(brand)
     results = []
     for i, row in enumerate(all_rows):
@@ -285,7 +306,7 @@ def search_similar_products(brand: str, spec: str, type_: str, top_n: int = 4) -
     if not ws:
         return []
 
-    all_rows = ws.get_all_values()
+    all_rows = _get_all_rows()
     brand_q = _normalize(brand)
     spec_q  = _normalize(spec).replace("w", "").replace("kw", "")
     type_q  = _normalize(type_).replace("-", "")
@@ -471,12 +492,77 @@ def deduct_stock(brand: str, spec: str, type_: str, quantity: int,
     }
 
 
+def batch_deduct_all(pre_checked: list, vehicle_no: str, operator: str, party: str) -> tuple:
+    """
+    Deduct stock for ALL items in ONE batch Google Sheets API call.
+    Returns (results, errors) where results are successful deductions.
+    pre_checked items must have: brand, spec, type, quantity, product_id, unit, row_idx, before_qty
+    """
+    ws = _get_sheet("Stock")
+    if not ws:
+        return [], ["Google Sheets connection failed"]
+
+    results = []
+    errors  = []
+    updates = []   # all cell updates collected here
+
+    for item in pre_checked:
+        row_idx  = item["row_idx"]
+        new_qty  = item["before_qty"] - item["quantity"]
+        status   = "No Stock" if new_qty == 0 else ("Low Stock" if new_qty < 5 else "In Stock")
+        rate_raw = item.get("rate", "")
+        try:
+            rate  = float(str(rate_raw).replace(",", "").replace("₹", "").strip() or 0)
+            total = int(new_qty * rate) if rate > 0 else None
+        except Exception:
+            total = None
+
+        updates.append({"range": f"E{row_idx}", "values": [[new_qty]]})
+        updates.append({"range": f"H{row_idx}", "values": [[status]]})
+        if total is not None:
+            updates.append({"range": f"G{row_idx}", "values": [[total]]})
+
+        results.append({
+            "success": True,
+            "brand":  item["brand"], "spec": item["spec"], "type": item["type"],
+            "before": item["before_qty"], "after": new_qty,
+            "quantity": item["quantity"], "rate": rate_raw,
+            "unit": item.get("unit", "nos")
+        })
+
+    if not updates:
+        return [], ["No items to deduct"]
+
+    try:
+        ws.batch_update(updates)
+        _invalidate_rows_cache()   # force fresh read on next lookup
+    except Exception as e:
+        logger.error(f"batch_deduct_all failed: {e}")
+        return [], [f"Sheet write failed: {e}"]
+
+    # Log all transactions
+    for item, result in zip(pre_checked, results):
+        _log_transaction(
+            type_="SHIP_OUT",
+            brand=item["brand"],
+            spec=f"{item['spec']} {item['type']}",
+            qty_change=-item["quantity"],
+            before=item["before_qty"],
+            after=result["after"],
+            vehicle_no=vehicle_no,
+            operator=operator,
+            party=party
+        )
+
+    return results, errors
+
+
 def add_new_product(category: str, brand: str, spec: str, type_: str, operator: str, unit: str = "nos", init_qty: int = 0) -> dict:
     ws = _get_sheet("Stock")
     if not ws:
         return {"success": False, "error": "Stock sheet nahi mili"}
 
-    all_rows = ws.get_all_values()
+    all_rows = _get_all_rows()
     cat_key    = category.strip().lower()
     target_cat = CATEGORY_HEADERS.get(cat_key, category)
     brand_norm = _normalize(brand)
@@ -628,7 +714,7 @@ def get_full_stock() -> list:
     if not ws:
         return []
 
-    all_rows = ws.get_all_values()
+    all_rows = _get_all_rows()
     current_section = "General"
     results = []
 

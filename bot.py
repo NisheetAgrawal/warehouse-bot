@@ -15,7 +15,7 @@ load_dotenv()
 
 from config import TELEGRAM_TOKEN
 from groq_parser import parse_message
-from sheets import get_stock, add_stock, deduct_stock, add_new_product, update_rate, _normalize, search_similar_products, get_all_products_by_brand, get_party_summary, get_full_stock
+from sheets import get_stock, add_stock, deduct_stock, batch_deduct_all, add_new_product, update_rate, _normalize, search_similar_products, get_all_products_by_brand, get_party_summary, get_full_stock
 from pdf_generator import generate_delivery_receipt, generate_stock_report_pdf
 
 logging.basicConfig(
@@ -255,8 +255,16 @@ async def _execute_ship_out(update_or_query, context, items, vehicle_no, party, 
                 f"Hai {info['quantity']}, chahiye {item['quantity']}"
             )
             continue
-        pre_checked.append({**item, "brand": info["brand"], "spec": info["spec"],
-                             "type": info["type"], "unit": info.get("unit", "nos")})
+        pre_checked.append({
+            **item,
+            "brand":      info["brand"],
+            "spec":       info["spec"],
+            "type":       info["type"],
+            "unit":       info.get("unit", "nos"),
+            "rate":       info.get("rate", ""),
+            "row_idx":    info["row_idx"],       # needed for batch deduct
+            "before_qty": info["quantity"],       # needed for batch deduct
+        })
 
     if not pre_checked:
         await context.bot.send_message(chat_id=chat_id,
@@ -284,19 +292,8 @@ async def _execute_ship_out(update_or_query, context, items, vehicle_no, party, 
             parse_mode="Markdown")
         return
 
-    # ── Step 2: Deduct stock (PDF is ready) ──────────────────────
-    results = []
-    errors  = []
-    for item in pre_checked:
-        result = deduct_stock(
-            item["brand"], item["spec"], item["type"],
-            item["quantity"], vehicle_no, sender, party,
-            item.get("product_id", "")
-        )
-        if result["success"]:
-            results.append(result)
-        else:
-            errors.append(result.get("error", "Unknown error"))
+    # ── Step 2: Deduct ALL stock in ONE batch API call ───────────
+    results, errors = batch_deduct_all(pre_checked, vehicle_no, sender, party)
 
     if not results:
         await context.bot.send_message(chat_id=chat_id,
