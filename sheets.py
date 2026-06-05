@@ -84,32 +84,25 @@ def _get_or_create_transactions_sheet():
 
 def _is_product_row(row: list) -> bool:
     """
-    Sheet now has product_id as col A (index 0).
-    A product row has:
-    - Col B (index 1): Sr.No — must be a digit (1, 2, 3...)
-    - Col C (index 2): non-empty brand/product name, not a known header keyword
-    - Col D (index 3): spec value (may be empty for cables/PVC)
+    Sheet columns: A=product_id, B=Brand, C=Spec, D=Type, E=Qty, F=Rate, G=Total, H=Status, I=Unit
+    Product rows have a non-empty product_id in col A (index 0).
+    Header/section rows have an empty col A.
     """
-    if len(row) < 3:
+    if len(row) < 2:
         return False
 
-    col_b     = str(row[1]).strip()   # Sr.No
-    brand_raw = str(row[2]).strip()   # Brand
-    spec_raw  = str(row[3]).strip() if len(row) > 3 else ""  # Spec
+    product_id = str(row[0]).strip()   # col A = product_id
+    brand_raw  = str(row[1]).strip()   # col B = Brand
 
-    # Sr.No must be a number
-    if not col_b.isdigit():
+    # Product rows always have a product_id (e.g. "SP-WAR-001")
+    if not product_id:
         return False
 
     if not brand_raw:
         return False
 
     brand_lower = brand_raw.lower().strip()
-    spec_lower  = spec_raw.lower().strip()
-
     if brand_lower in HEADER_KEYWORDS:
-        return False
-    if spec_lower in HEADER_SPEC_KEYWORDS:
         return False
 
     return True
@@ -172,11 +165,11 @@ def find_product_row(brand: str, spec: str, type_: str):
         for i, row in enumerate(all_rows):
             if not _is_product_row(row):
                 continue
-            row_brand = _normalize(row[2])        # col C = Brand
+            row_brand = _normalize(row[1])        # col B = Brand
             if brand_q_norm not in row_brand and row_brand not in brand_q_norm:
                 continue
-            row_spec = str(row[3]).strip() if len(row) > 3 else ""   # col D
-            row_type = str(row[4]).strip() if len(row) > 4 else ""   # col E
+            row_spec = str(row[2]).strip() if len(row) > 2 else ""   # col C
+            row_type = str(row[3]).strip() if len(row) > 3 else ""   # col D
             if _specs_match(row_spec, row_type, spec, type_):
                 return i + 1, row
         return None, None
@@ -219,12 +212,12 @@ def get_all_products_by_brand(brand: str) -> list:
     for i, row in enumerate(all_rows):
         if not _is_product_row(row):
             continue
-        row_brand = _normalize(row[2])            # col C = Brand
+        row_brand = _normalize(row[1])            # col B = Brand
         if brand_q in row_brand or row_brand in brand_q:
-            qty = int(row[5]) if len(row) > 5 and str(row[5]).isdigit() else 0
+            qty = int(row[4]) if len(row) > 4 and str(row[4]).isdigit() else 0
             results.append({
-                "brand": row[2].strip(), "spec": row[3].strip(),
-                "type": row[4].strip(), "quantity": qty, "row_idx": i + 1, "score": 10
+                "brand": row[1].strip(), "spec": row[2].strip(),
+                "type": row[3].strip(), "quantity": qty, "row_idx": i + 1, "score": 10
             })
     return results
 
@@ -247,9 +240,9 @@ def search_similar_products(brand: str, spec: str, type_: str, top_n: int = 4) -
     for i, row in enumerate(all_rows):
         if not _is_product_row(row):
             continue
-        row_brand = _normalize(row[2])            # col C = Brand
-        row_spec  = _normalize(str(row[3])).replace("w", "").replace("kw", "")  # col D
-        row_type  = _normalize(str(row[4])).replace("-", "")                     # col E
+        row_brand = _normalize(row[1])            # col B = Brand
+        row_spec  = _normalize(str(row[2])).replace("w", "").replace("kw", "")  # col C
+        row_type  = _normalize(str(row[3])).replace("-", "")                     # col D
 
         acdb_fallback = any(kw in brand_q for kw in ["acdb", "dcdb"]) and (
             "acdb" in row_brand or "dcdb" in row_brand
@@ -270,11 +263,11 @@ def search_similar_products(brand: str, spec: str, type_: str, top_n: int = 4) -
         type_score = 1 if (not type_q or not row_type or type_q == row_type) else 0
 
         score = brand_score + spec_score + type_score
-        qty = int(row[5]) if len(row) > 5 and str(row[5]).isdigit() else 0  # col F
+        qty = int(row[4]) if len(row) > 4 and str(row[4]).isdigit() else 0  # col E
         scored.append({
-            "brand":    row[2].strip(),
-            "spec":     row[3].strip(),
-            "type":     row[4].strip(),
+            "brand":    row[1].strip(),
+            "spec":     row[2].strip(),
+            "type":     row[3].strip(),
             "quantity": qty,
             "row_idx":  i + 1,
             "score":    score
@@ -289,17 +282,17 @@ def get_stock(brand: str, spec: str, type_: str) -> dict:
     if row_idx is None:
         return {"found": False, "brand": brand, "spec": spec, "type": type_}
 
-    qty_raw = str(row[5]).strip() if len(row) > 5 else "0"   # col F = Quantity
+    qty_raw = str(row[4]).strip() if len(row) > 4 else "0"   # col E = Quantity
     qty = int(qty_raw) if qty_raw.isdigit() else 0
-    rate   = row[6].strip() if len(row) > 6 else "N/A"       # col G = Rate
-    status = row[8].strip() if len(row) > 8 else ""           # col I = Stock Status
-    unit   = row[9].strip() if len(row) > 9 and row[9] else "nos"  # col J = Unit
+    rate   = row[5].strip() if len(row) > 5 else "N/A"       # col F = Rate
+    status = row[7].strip() if len(row) > 7 else ""           # col H = Stock Status
+    unit   = row[8].strip() if len(row) > 8 and row[8] else "nos"  # col I = Unit
 
     return {
         "found": True,
-        "brand": row[2].strip(),   # col C
-        "spec":  row[3].strip(),   # col D
-        "type":  row[4].strip(),   # col E
+        "brand": row[1].strip(),   # col B
+        "spec":  row[2].strip(),   # col C
+        "type":  row[3].strip(),   # col D
         "quantity": qty,
         "unit": unit,
         "rate": rate,
@@ -318,23 +311,23 @@ def update_quantity(row_idx: int, new_qty: int):
     else:
         status = "In Stock"
     try:
-        # Col F=qty, Col G=rate, Col H=total, Col I=status  (product_id now in col A)
+        # Col E=qty, Col F=rate, Col G=total, Col H=status
         row = ws.row_values(row_idx)
-        rate_raw = row[6].strip() if len(row) > 6 else ""    # col G = Rate
+        rate_raw = row[5].strip() if len(row) > 5 else ""    # col F = Rate
         try:
             rate = float(str(rate_raw).replace(",", "").replace("₹", "").strip() or 0)
             total = int(new_qty * rate) if rate > 0 else ""
         except Exception:
             total = ""
-        updates = [{"range": f"F{row_idx}", "values": [[new_qty]]},   # col F = Qty
-                   {"range": f"I{row_idx}", "values": [[status]]}]    # col I = Status
+        updates = [{"range": f"E{row_idx}", "values": [[new_qty]]},   # col E = Qty
+                   {"range": f"H{row_idx}", "values": [[status]]}]    # col H = Status
         if total != "":
-            updates.append({"range": f"H{row_idx}", "values": [[total]]})  # col H = Total
+            updates.append({"range": f"G{row_idx}", "values": [[total]]})  # col G = Total
         ws.batch_update(updates)
     except Exception as e:
         logger.warning(f"batch update failed, trying single cell: {e}")
         try:
-            ws.update_cell(row_idx, 6, new_qty)   # col F (1-indexed = 6)
+            ws.update_cell(row_idx, 5, new_qty)   # col E (1-indexed = 5)
         except Exception as e2:
             logger.error(f"update_quantity failed completely: {e2}")
 
@@ -347,8 +340,8 @@ def update_rate(brand: str, spec: str, type_: str, rate: int) -> dict:
     ws = _get_sheet("Stock")
     row_idx = info["row_idx"]
     qty = info["quantity"]
-    ws.update_cell(row_idx, 7, rate)                          # col G = Rate  (shifted +1)
-    ws.update_cell(row_idx, 8, qty * rate if qty else 0)     # col H = Total (shifted +1)
+    ws.update_cell(row_idx, 6, rate)                          # col F = Rate
+    ws.update_cell(row_idx, 7, qty * rate if qty else 0)     # col G = Total
     return {
         "success": True,
         "brand": info["brand"], "spec": info["spec"], "type": info["type"],
@@ -440,13 +433,13 @@ def add_new_product(category: str, brand: str, spec: str, type_: str, operator: 
     brand_end   = None   # 1-based row number of last matching-brand row in section
 
     for i, row in enumerate(all_rows):
-        # With product_id in col A: col B (index 1) = Sr.No, col C (index 2) = Brand
-        cell_b = str(row[1]).strip() if len(row) > 1 else ""   # Sr.No / section header text
-        cell_c = str(row[2]).strip() if len(row) > 2 else ""   # Brand
-        combined = (cell_b + " " + cell_c).lower()
+        # col A = product_id (empty for headers), col B = Brand/section label
+        pid   = str(row[0]).strip() if row else ""
+        col_b = str(row[1]).strip() if len(row) > 1 else ""   # Brand or section label
+        combined = col_b.lower()
 
-        # Detect start of our target category section
-        if target_cat.lower() in combined and not cell_b.isdigit():
+        # Detect start of our target category section (header rows have empty product_id)
+        if not pid and target_cat.lower() in combined:
             in_section = True
             section_end = None
             brand_end   = None
@@ -455,18 +448,16 @@ def add_new_product(category: str, brand: str, spec: str, type_: str, operator: 
         if not in_section:
             continue
 
-        # Another section started — stop
-        if not cell_b.isdigit() and any(
+        # Another major section started — stop
+        if not pid and any(
             h.lower() in combined
-            for h in ["solar panel", "inverter", "acdb", "cable", "pvc material"]
-        ) and combined.strip():
-            if cell_b.upper() in ("I","II","III","IV","V","VI","A","B","C","D","E") or \
-               any(x in combined for x in ["solar panel","inverter","acdb/dcdb","iv. cable","v. pvc"]):
-                break
+            for h in ["solar panel", "inverter", "acdb", "cable", "pvc material", "structure"]
+        ) and combined.strip() and combined != target_cat.lower():
+            break
 
         if _is_product_row(row):
             section_end = i + 1   # 1-based
-            if brand_norm in _normalize(cell_c) or _normalize(cell_c) in brand_norm:
+            if brand_norm in _normalize(col_b) or _normalize(col_b) in brand_norm:
                 brand_end = i + 1
 
     # Target row = after brand group or after section
@@ -487,21 +478,6 @@ def add_new_product(category: str, brand: str, spec: str, type_: str, operator: 
                 target_row = i + 2
                 break
 
-    # Count existing product rows in section to assign Sr.No
-    sr_no = 1
-    if section_end is not None:
-        in_sec = False
-        for row in all_rows:
-            col_b = str(row[1]).strip() if len(row) > 1 else ""
-            col_c = str(row[2]).strip() if len(row) > 2 else ""
-            combined = (col_b + " " + col_c).lower()
-            if target_cat.lower() in combined and not col_b.isdigit():
-                in_sec = True
-                sr_no  = 1
-                continue
-            if in_sec and _is_product_row(row):
-                sr_no += 1
-
     qty    = init_qty if init_qty > 0 else 0
     if qty == 0:
         status = "No Stock"
@@ -509,9 +485,9 @@ def add_new_product(category: str, brand: str, spec: str, type_: str, operator: 
         status = "Low Stock"
     else:
         status = "In Stock"
-    # Write to cols B:J (leave col A = product_id blank; assigned manually or later)
-    new_row = [sr_no, brand, spec, type_, qty, "", "", status, unit]
-    ws.update(f"B{target_row}:J{target_row}", [new_row])
+    # Write to cols B:I (col A = product_id left blank — assigned later)
+    new_row = [brand, spec, type_, qty, "", "", status, unit]
+    ws.update(f"B{target_row}:I{target_row}", [new_row])
 
     # Copy formatting from the nearest PRODUCT row above (skip headers)
     try:
@@ -533,21 +509,21 @@ def add_new_product(category: str, brand: str, spec: str, type_: str, operator: 
                         "sheetId": sheet_id,
                         "startRowIndex": copy_from - 1,
                         "endRowIndex": copy_from,
-                        "startColumnIndex": 1,    # col B onwards (skip product_id col)
-                        "endColumnIndex": 10      # cols B-J (9 data cols)
+                        "startColumnIndex": 1,    # col B (skip product_id in col A)
+                        "endColumnIndex": 9       # cols B-I (8 data cols)
                     },
                     "destination": {
                         "sheetId": sheet_id,
                         "startRowIndex": target_row - 1,
                         "endRowIndex": target_row,
                         "startColumnIndex": 1,
-                        "endColumnIndex": 10
+                        "endColumnIndex": 9
                     },
                     "pasteType": "PASTE_FORMAT"
                 }
             }]})
             # Re-write data after format copy
-            ws.update(f"B{target_row}:J{target_row}", [new_row])
+            ws.update(f"B{target_row}:I{target_row}", [new_row])
     except Exception as e:
         logger.warning(f"Format copy failed (non-critical): {e}")
 
@@ -569,15 +545,15 @@ def get_full_stock() -> list:
     results = []
 
     for row in all_rows:
-        # col A (index 0) = product_id, col B (index 1) = Sr.No/header, col C (index 2) = Brand
-        col_b = str(row[1]).strip() if len(row) > 1 else ""   # Sr.No or section header text
-        col_c = str(row[2]).strip() if len(row) > 2 else ""   # Brand
-        combined = (col_b + " " + col_c).lower()
+        # col A = product_id (empty for headers), col B = Brand or section label
+        pid   = str(row[0]).strip() if row else ""
+        col_b = str(row[1]).strip() if len(row) > 1 else ""
 
-        # Detect section header: col B is non-digit with section keyword
-        if not col_b.isdigit() and col_b:
-            for sec in ["Solar Panel", "Inverter", "ACDB/DCDB", "Cable", "PVC Material", "Structure"]:
-                if sec.lower() in combined:
+        # Detect section header: no product_id + col B has section keyword
+        if not pid and col_b:
+            col_b_lower = col_b.lower()
+            for sec in ["Solar Panel", "Inverter", "ACDB", "DCDB", "Cable", "PVC Material", "Structure"]:
+                if sec.lower() in col_b_lower:
                     current_section = sec
                     break
             continue
@@ -585,15 +561,15 @@ def get_full_stock() -> list:
         if not _is_product_row(row):
             continue
 
-        qty_raw = str(row[5]).strip() if len(row) > 5 else "0"   # col F = Qty
+        qty_raw = str(row[4]).strip() if len(row) > 4 else "0"   # col E = Qty
         qty = int(qty_raw) if qty_raw.isdigit() else 0
-        unit = str(row[9]).strip() if len(row) > 9 and row[9] else "nos"  # col J = Unit
+        unit = str(row[8]).strip() if len(row) > 8 and row[8] else "nos"  # col I = Unit
 
         results.append({
             "section":  current_section,
-            "brand":    col_c,
-            "spec":     str(row[3]).strip() if len(row) > 3 else "",   # col D
-            "type":     str(row[4]).strip() if len(row) > 4 else "",   # col E
+            "brand":    col_b,
+            "spec":     str(row[2]).strip() if len(row) > 2 else "",   # col C
+            "type":     str(row[3]).strip() if len(row) > 3 else "",   # col D
             "quantity": qty,
             "unit":     unit,
         })
