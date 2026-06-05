@@ -248,9 +248,30 @@ def _python_fallback(user_text: str):
                        "quantity": qty, "product_id": matched_pid}]}
 
 
+def _is_structured_multiline(text: str) -> bool:
+    """
+    Detect structured truck-loading / stock-in format:
+    Multiple lines each with PRODUCT-QTYPCS, ending with vehicle + party.
+    These should be parsed by Python directly, not sent to Groq.
+    """
+    lines = [l.strip() for l in text.strip().split('\n') if l.strip()]
+    if len(lines) < 3:
+        return False
+    # At least 3 lines AND (last line has ko gaya/ko gya OR aaya/from)
+    last = lines[-1].lower()
+    return any(s in last for s in ["ko gaya", "ko gya", "le gaya", "aaya", "se aya", "from "])
+
+
 def parse_message(user_text: str, sender_name: str) -> dict:
     from config import GROQ_API_KEY
     from sheets import catalog_as_prompt_text
+
+    # ── Fast path: structured multi-line → pure Python, skip Groq entirely ───
+    if _is_structured_multiline(user_text):
+        result = _python_fallback(user_text)
+        if result:
+            logger.info(f"Structured multi-line parsed in Python: {result['intent']}, {len(result.get('items',[]))} items")
+            return result
 
     catalog_text = catalog_as_prompt_text()
     full_prompt = (
@@ -265,7 +286,7 @@ def parse_message(user_text: str, sender_name: str) -> dict:
     payload = {
         "model": "llama-3.3-70b-versatile",
         "temperature": 0,
-        "max_tokens": 1200,
+        "max_tokens": 2000,
         "messages": [
             {"role": "system", "content": full_prompt},
             {"role": "user", "content": f"{_preprocess(user_text)}\n(sent by: {sender_name})"}
