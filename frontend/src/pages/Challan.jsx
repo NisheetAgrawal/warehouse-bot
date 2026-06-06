@@ -58,8 +58,8 @@ function GhostBtn({ children, onClick }) {
       className="w-full rounded-2xl py-4 font-semibold transition-all active:scale-95"
       style={{
         background: "rgba(255,255,255,0.06)",
-        border: "1px solid rgba(255,255,255,0.12)",
-        color: "rgba(255,255,255,0.7)",
+        border: "1px solid rgba(255,255,255,0.18)",
+        color: "rgba(255,255,255,0.75)",
         cursor: "pointer",
         fontFamily: "'DM Sans', sans-serif",
         fontSize: 15,
@@ -71,7 +71,7 @@ function GhostBtn({ children, onClick }) {
   )
 }
 
-function InputField({ label, value, onChange, placeholder, mono, autoUppercase, style }) {
+function InputField({ label, value, onChange, placeholder, mono, autoUppercase }) {
   const [focused, setFocused] = useState(false)
   return (
     <div>
@@ -96,7 +96,6 @@ function InputField({ label, value, onChange, placeholder, mono, autoUppercase, 
           fontSize: 15,
           color: value ? "#fff" : undefined,
           boxSizing: "border-box",
-          ...style,
         }}
         autoComplete="off"
         spellCheck={false}
@@ -105,10 +104,114 @@ function InputField({ label, value, onChange, placeholder, mono, autoUppercase, 
   )
 }
 
+// ── Fix 1: Tappable inline qty editor ────────────────────────────
+// The number in the middle is tappable. It transforms into a small
+// inline input (DM Mono, orange bottom border, 48px, centered).
+// Blur or Enter commits. Minimum value 1.
+function QtyControl({ qty, productId, onDelta, onDirectSet }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft]     = useState(String(qty))
+  const inputRef              = useRef(null)
+
+  // Sync draft when qty changes from outside (e.g. + button)
+  useEffect(() => {
+    if (!editing) setDraft(String(qty))
+  }, [qty, editing])
+
+  useEffect(() => {
+    if (editing && inputRef.current) {
+      inputRef.current.focus()
+      inputRef.current.select()
+    }
+  }, [editing])
+
+  function commit() {
+    const n = parseInt(draft, 10)
+    if (!isNaN(n) && n >= 1) {
+      onDirectSet(productId, n)
+    } else {
+      setDraft(String(qty))   // revert if invalid
+    }
+    setEditing(false)
+  }
+
+  return (
+    <div className="flex items-center gap-2 flex-shrink-0">
+      {/* Minus — design unchanged */}
+      <button
+        onClick={() => onDelta(productId, -1)}
+        className="w-8 h-8 rounded-xl flex items-center justify-center transition-opacity active:opacity-60"
+        style={{ background: "rgba(255,255,255,0.1)", border: "none",
+                 cursor: "pointer", color: "rgba(255,255,255,0.7)", fontSize: 18 }}
+      >
+        −
+      </button>
+
+      {/* Qty — tappable number OR inline input */}
+      {editing ? (
+        <input
+          ref={inputRef}
+          type="number"
+          min="1"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); commit() } }}
+          style={{
+            width: 48,
+            textAlign: "center",
+            fontFamily: "'DM Mono', monospace",
+            fontSize: 15,
+            fontWeight: 600,
+            color: "#fff",
+            background: "transparent",
+            border: "none",
+            borderBottom: "2px solid #E8500A",
+            outline: "none",
+            padding: "2px 0",
+            MozAppearance: "textfield",
+          }}
+        />
+      ) : (
+        <span
+          onClick={() => { setDraft(String(qty)); setEditing(true) }}
+          style={{
+            minWidth: 28,
+            textAlign: "center",
+            fontSize: 15,
+            fontWeight: 600,
+            color: "#fff",
+            fontFamily: "'DM Mono', monospace",
+            cursor: "pointer",
+            padding: "2px 4px",
+            borderRadius: 4,
+            transition: "background 0.15s",
+          }}
+          title="Tap to edit quantity"
+        >
+          {qty}
+        </span>
+      )}
+
+      {/* Plus — design unchanged */}
+      <button
+        onClick={() => onDelta(productId, 1)}
+        className="w-8 h-8 rounded-xl flex items-center justify-center transition-opacity active:opacity-60"
+        style={{ background: "#E8500A", border: "none", cursor: "pointer",
+                 color: "#fff", fontSize: 18 }}
+      >
+        +
+      </button>
+    </div>
+  )
+}
+
+
 // ── STEP 1 — Vehicle + Party ──────────────────────────────────────
-function Step1({ onNext, onBack }) {
-  const [vehicleNo, setVehicleNo] = useState("")
-  const [party, setParty]         = useState("")
+// Fix 2: accepts initialVehicleNo & initialParty so going back preserves values
+function Step1({ onNext, initialVehicleNo = "", initialParty = "" }) {
+  const [vehicleNo, setVehicleNo] = useState(initialVehicleNo)
+  const [party, setParty]         = useState(initialParty)
   const [err, setErr]             = useState(false)
 
   function handleNext() {
@@ -162,42 +265,39 @@ function Step1({ onNext, onBack }) {
   )
 }
 
+
 // ── STEP 2 — Product search + item list ──────────────────────────
-function Step2({ vehicleNo, party, onNext, onBack }) {
+// Fix 2: accepts initialItems so going back restores the list
+function Step2({ vehicleNo, party, onNext, onBack, initialItems = [] }) {
   const [allProducts, setAllProducts] = useState([])
   const [query, setQuery]             = useState("")
   const [suggestions, setSuggestions] = useState([])
   const [showDrop, setShowDrop]       = useState(false)
-  const [items, setItems]             = useState([])   // {product, qty}
+  const [items, setItems]             = useState(initialItems)  // ← seeded from parent
   const [loadingProd, setLoadingProd] = useState(true)
   const dropRef  = useRef(null)
   const inputRef = useRef(null)
 
-  // Fetch all products once
   useEffect(() => {
     api.products()
       .then((data) => { setAllProducts(data); setLoadingProd(false) })
       .catch(() => setLoadingProd(false))
   }, [])
 
-  // Filter as user types
   useEffect(() => {
     const q = query.trim().toLowerCase()
     if (q.length < 2) { setSuggestions([]); setShowDrop(false); return }
-
     const matches = allProducts.filter((p) => {
-      const haystack = `${p.brand} ${p.spec} ${p.type_} ${p.category}`.toLowerCase()
-      return q.split(" ").every((word) => haystack.includes(word))
+      const hay = `${p.brand} ${p.spec} ${p.type_} ${p.category}`.toLowerCase()
+      return q.split(" ").every((w) => hay.includes(w))
     }).slice(0, 8)
-
     setSuggestions(matches)
     setShowDrop(true)
   }, [query, allProducts])
 
-  // Close dropdown on outside click
   useEffect(() => {
     function handler(e) {
-      if (dropRef.current && !dropRef.current.contains(e.target) &&
+      if (dropRef.current  && !dropRef.current.contains(e.target) &&
           inputRef.current && !inputRef.current.contains(e.target)) {
         setShowDrop(false)
       }
@@ -207,9 +307,7 @@ function Step2({ vehicleNo, party, onNext, onBack }) {
   }, [])
 
   function addProduct(product) {
-    setQuery("")
-    setShowDrop(false)
-    // If already in list, just bump qty
+    setQuery(""); setShowDrop(false)
     setItems((prev) => {
       const idx = prev.findIndex((i) => i.product.product_id === product.product_id)
       if (idx !== -1) {
@@ -221,17 +319,25 @@ function Step2({ vehicleNo, party, onNext, onBack }) {
     })
   }
 
+  // +/- delta: minus at 1 removes the item
   function changeQty(productId, delta) {
     setItems((prev) =>
       prev
-        .map((i) =>
-          i.product.product_id === productId ? { ...i, qty: i.qty + delta } : i
-        )
+        .map((i) => i.product.product_id === productId ? { ...i, qty: i.qty + delta } : i)
         .filter((i) => i.qty > 0)
     )
   }
 
-  const canProceed = items.length > 0
+  // Fix 1: direct set from inline input — minimum 1, never removes
+  function setQtyDirect(productId, newQty) {
+    setItems((prev) =>
+      prev.map((i) =>
+        i.product.product_id === productId ? { ...i, qty: Math.max(1, newQty) } : i
+      )
+    )
+  }
+
+  const canProceed  = items.length > 0
   const hasOverflow = items.some((i) => i.qty > (i.product.quantity || 0))
 
   return (
@@ -243,12 +349,11 @@ function Step2({ vehicleNo, party, onNext, onBack }) {
         </h1>
         <p style={{ fontSize: 12, color: "rgba(255,255,255,0.35)", margin: 0,
                     fontFamily: "'DM Sans', sans-serif" }}>
-          Step 2 of 3 — {vehicleNo}
-          {party ? ` → ${party}` : ""}
+          Step 2 of 3 — {vehicleNo}{party ? ` → ${party}` : ""}
         </p>
       </div>
 
-      {/* Search input + dropdown */}
+      {/* Search */}
       <div className="relative" ref={dropRef}>
         <div className="relative">
           <input
@@ -280,7 +385,6 @@ function Step2({ vehicleNo, party, onNext, onBack }) {
           )}
         </div>
 
-        {/* Dropdown */}
         {showDrop && suggestions.length > 0 && (
           <div
             className="absolute left-0 right-0 z-50 rounded-2xl overflow-hidden"
@@ -299,7 +403,7 @@ function Step2({ vehicleNo, party, onNext, onBack }) {
                 <button
                   key={p.product_id}
                   onClick={() => addProduct(p)}
-                  className="w-full flex items-center gap-3 px-4 py-3 text-left transition-colors"
+                  className="w-full flex items-center gap-3 px-4 py-3 text-left"
                   style={{
                     background: alreadyAdded ? "rgba(232,80,10,0.08)" : "transparent",
                     border: "none",
@@ -307,15 +411,11 @@ function Step2({ vehicleNo, party, onNext, onBack }) {
                     cursor: "pointer",
                   }}
                 >
-                  <span style={{ fontSize: 20, flexShrink: 0 }}>
-                    {CAT_EMOJI[p.category] || "📦"}
-                  </span>
+                  <span style={{ fontSize: 20, flexShrink: 0 }}>{CAT_EMOJI[p.category] || "📦"}</span>
                   <div className="flex-1 min-w-0">
                     <p className="truncate" style={{ margin: 0, fontSize: 13, fontWeight: 600,
                                                      color: "#fff", fontFamily: "'DM Sans', sans-serif" }}>
-                      {p.brand}
-                      {p.spec ? ` · ${p.spec}` : ""}
-                      {p.type_ ? ` ${p.type_}` : ""}
+                      {p.brand}{p.spec ? ` · ${p.spec}` : ""}{p.type_ ? ` ${p.type_}` : ""}
                     </p>
                     <p style={{ margin: 0, fontSize: 11, color: "rgba(255,255,255,0.35)",
                                 fontFamily: "'DM Mono', monospace" }}>
@@ -350,12 +450,10 @@ function Step2({ vehicleNo, party, onNext, onBack }) {
         )}
       </div>
 
-      {/* Added items list */}
+      {/* Items list */}
       {items.length === 0 ? (
-        <div
-          className="flex-1 flex flex-col items-center justify-center gap-2"
-          style={{ color: "rgba(255,255,255,0.2)" }}
-        >
+        <div className="flex-1 flex flex-col items-center justify-center gap-2"
+             style={{ color: "rgba(255,255,255,0.2)" }}>
           <span style={{ fontSize: 40 }}>📦</span>
           <p style={{ fontSize: 13, fontFamily: "'DM Sans', sans-serif", margin: 0 }}>
             Upar search karo aur product chunno
@@ -374,15 +472,11 @@ function Step2({ vehicleNo, party, onNext, onBack }) {
                   border: `1px solid ${overflow ? "rgba(248,113,113,0.35)" : "rgba(255,255,255,0.08)"}`,
                 }}
               >
-                <span style={{ fontSize: 18, flexShrink: 0 }}>
-                  {CAT_EMOJI[product.category] || "📦"}
-                </span>
+                <span style={{ fontSize: 18, flexShrink: 0 }}>{CAT_EMOJI[product.category] || "📦"}</span>
                 <div className="flex-1 min-w-0">
                   <p className="truncate" style={{ margin: 0, fontSize: 13, fontWeight: 600,
                                                    color: "#fff", fontFamily: "'DM Sans', sans-serif" }}>
-                    {product.brand}
-                    {product.spec ? ` ${product.spec}` : ""}
-                    {product.type_ ? ` ${product.type_}` : ""}
+                    {product.brand}{product.spec ? ` ${product.spec}` : ""}{product.type_ ? ` ${product.type_}` : ""}
                   </p>
                   {overflow && (
                     <p style={{ margin: "2px 0 0", fontSize: 11, color: "#F87171",
@@ -392,37 +486,19 @@ function Step2({ vehicleNo, party, onNext, onBack }) {
                   )}
                 </div>
 
-                {/* Qty controls */}
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <button
-                    onClick={() => changeQty(product.product_id, -1)}
-                    className="w-8 h-8 rounded-xl flex items-center justify-center transition-opacity active:opacity-60"
-                    style={{ background: "rgba(255,255,255,0.1)", border: "none",
-                             cursor: "pointer", color: "rgba(255,255,255,0.7)", fontSize: 18 }}
-                  >
-                    −
-                  </button>
-                  <span style={{ minWidth: 28, textAlign: "center", fontSize: 15,
-                                 fontWeight: 600, color: "#fff",
-                                 fontFamily: "'DM Mono', monospace" }}>
-                    {qty}
-                  </span>
-                  <button
-                    onClick={() => changeQty(product.product_id, 1)}
-                    className="w-8 h-8 rounded-xl flex items-center justify-center transition-opacity active:opacity-60"
-                    style={{ background: "#E8500A", border: "none", cursor: "pointer",
-                             color: "#fff", fontSize: 18 }}
-                  >
-                    +
-                  </button>
-                </div>
+                {/* Fix 1: QtyControl with tappable number */}
+                <QtyControl
+                  qty={qty}
+                  productId={product.product_id}
+                  onDelta={changeQty}
+                  onDirectSet={setQtyDirect}
+                />
               </div>
             )
           })}
         </div>
       )}
 
-      {/* Bottom CTA */}
       <div className="pb-8 flex flex-col gap-2">
         {hasOverflow && (
           <p style={{ fontSize: 12, color: "#FACC15", textAlign: "center",
@@ -430,10 +506,7 @@ function Step2({ vehicleNo, party, onNext, onBack }) {
             ⚠️ Kuch items ki quantity available stock se zyada hai
           </p>
         )}
-        <OrangeBtn
-          onClick={() => onNext(items)}
-          disabled={!canProceed || hasOverflow}
-        >
+        <OrangeBtn onClick={() => onNext(items)} disabled={!canProceed || hasOverflow}>
           Challan Banao →
         </OrangeBtn>
       </div>
@@ -441,24 +514,22 @@ function Step2({ vehicleNo, party, onNext, onBack }) {
   )
 }
 
+
 // ── STEP 3 — Confirm + submit ─────────────────────────────────────
-function Step3({ vehicleNo, party, items, onBack }) {
-  const navigate = useNavigate()
-  const [loading, setLoading]   = useState(false)
-  const [errors, setErrors]     = useState([])
-  const [success, setSuccess]   = useState(false)
-  const [pdfUrl, setPdfUrl]     = useState(null)
+function Step3({ vehicleNo, party, items, onBack, onEdit, onNewChallan }) {
+  const [loading, setLoading] = useState(false)
+  const [errors, setErrors]   = useState([])
+  const [success, setSuccess] = useState(false)
+  const [pdfUrl, setPdfUrl]   = useState(null)
 
   const totalQty = items.reduce((sum, { qty }) => sum + qty, 0)
 
   async function handleConfirm() {
     setLoading(true)
     setErrors([])
-
     try {
-      // 1. Deduct stock
       const stockRes = await fetch(`${BASE}/api/stock/out`, {
-        method:  "POST",
+        method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           vehicle_no: vehicleNo,
@@ -474,21 +545,16 @@ function Step3({ vehicleNo, party, items, onBack }) {
           })),
         }),
       })
-
       const stockData = await stockRes.json()
-
       if (!stockRes.ok) {
         setErrors([stockData.detail || "Stock update fail hua"])
         setLoading(false)
         return
       }
-
-      // Collect API-level errors (partial failures)
       const apiErrors = stockData.errors || []
 
-      // 2. Generate PDF
       const pdfRes = await fetch(`${BASE}/api/challan/pdf`, {
-        method:  "POST",
+        method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           vehicle_no: vehicleNo,
@@ -503,7 +569,6 @@ function Step3({ vehicleNo, party, items, onBack }) {
           })),
         }),
       })
-
       if (pdfRes.ok) {
         const blob = await pdfRes.blob()
         const url  = URL.createObjectURL(blob)
@@ -513,12 +578,8 @@ function Step3({ vehicleNo, party, items, onBack }) {
         apiErrors.push("PDF generate nahi hua — stock deduct ho gaya")
       }
 
-      if (apiErrors.length > 0) {
-        setErrors(apiErrors)
-      }
-
+      if (apiErrors.length > 0) setErrors(apiErrors)
       setSuccess(true)
-
     } catch (err) {
       setErrors([`Network error: ${err.message}`])
     } finally {
@@ -526,11 +587,10 @@ function Step3({ vehicleNo, party, items, onBack }) {
     }
   }
 
-  // ── Success screen ────────────────────────────────────────────
+  // ── Success screen ──────────────────────────────────────────────
   if (success) {
     return (
       <div className="flex flex-col flex-1 items-center justify-center px-5 gap-6">
-        {/* Animated checkmark */}
         <div
           className="flex items-center justify-center rounded-full"
           style={{
@@ -551,8 +611,7 @@ function Step3({ vehicleNo, party, items, onBack }) {
                       fontFamily: "'DM Sans', sans-serif" }}>
             Challan ban gaya! 🎉
           </p>
-          <p style={{ fontSize: 13, color: "rgba(255,255,255,0.4)", margin: 0,
-                      fontFamily: "'DM Sans', sans-serif" }}>
+          <p style={{ fontSize: 13, color: "rgba(255,255,255,0.4)", margin: 0 }}>
             Stock updated for
           </p>
           <p style={{ fontSize: 22, fontWeight: 700, color: "#E8500A", margin: 0,
@@ -560,38 +619,34 @@ function Step3({ vehicleNo, party, items, onBack }) {
             {vehicleNo}
           </p>
           {party && (
-            <p style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", margin: 0,
-                        fontFamily: "'DM Sans', sans-serif" }}>
+            <p style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", margin: 0 }}>
               → {party}
             </p>
           )}
         </div>
 
-        {/* Show any partial errors */}
         {errors.length > 0 && (
-          <div
-            className="w-full rounded-2xl px-4 py-3"
-            style={{ background: "rgba(248,113,113,0.1)", border: "1px solid rgba(248,113,113,0.25)" }}
-          >
-            <p style={{ fontSize: 12, color: "#F87171", fontFamily: "'DM Sans', sans-serif", margin: 0 }}>
-              ⚠️ Kuch items fail hue:
-            </p>
+          <div className="w-full rounded-2xl px-4 py-3"
+               style={{ background: "rgba(248,113,113,0.1)", border: "1px solid rgba(248,113,113,0.25)" }}>
+            <p style={{ fontSize: 12, color: "#F87171", margin: 0 }}>⚠️ Kuch items fail hue:</p>
             {errors.map((e, i) => (
-              <p key={i} style={{ fontSize: 12, color: "#F87171",
-                                  fontFamily: "'DM Sans', sans-serif", margin: "4px 0 0" }}>
-                • {e}
-              </p>
+              <p key={i} style={{ fontSize: 12, color: "#F87171", margin: "4px 0 0" }}>• {e}</p>
             ))}
           </div>
         )}
 
-        <div className="w-full flex flex-col gap-3 mt-4">
+        <div className="w-full flex flex-col gap-3 mt-2">
           {pdfUrl && (
             <GhostBtn onClick={() => window.open(pdfUrl, "_blank")}>
               📄 PDF dobara dekho
             </GhostBtn>
           )}
-          <OrangeBtn onClick={() => navigate("/home")}>
+          {/* Fix 3: Edit Karo → goes back to Step 2 with same vehicle, party, items */}
+          <GhostBtn onClick={onEdit}>
+            ✏️ Edit Karo
+          </GhostBtn>
+          {/* Naya Challan → full reset */}
+          <OrangeBtn onClick={onNewChallan}>
             Naya Challan
           </OrangeBtn>
         </div>
@@ -606,7 +661,7 @@ function Step3({ vehicleNo, party, items, onBack }) {
     )
   }
 
-  // ── Confirm summary screen ────────────────────────────────────
+  // ── Confirm summary screen ──────────────────────────────────────
   return (
     <div className="flex flex-col flex-1 px-5 pt-5 gap-5">
       <div className="flex flex-col gap-1">
@@ -620,14 +675,11 @@ function Step3({ vehicleNo, party, items, onBack }) {
         </p>
       </div>
 
-      {/* Vehicle + party badge */}
-      <div
-        className="rounded-2xl px-4 py-4 flex flex-col gap-1"
-        style={{ background: "rgba(232,80,10,0.1)", border: "1px solid rgba(232,80,10,0.25)" }}
-      >
+      <div className="rounded-2xl px-4 py-4 flex flex-col gap-1"
+           style={{ background: "rgba(232,80,10,0.1)", border: "1px solid rgba(232,80,10,0.25)" }}>
         <p style={{ fontSize: 11, color: "rgba(255,255,255,0.35)", margin: 0,
-                    fontFamily: "'DM Sans', sans-serif", textTransform: "uppercase",
-                    letterSpacing: "0.08em" }}>
+                    textTransform: "uppercase", letterSpacing: "0.08em",
+                    fontFamily: "'DM Sans', sans-serif" }}>
           Vehicle
         </p>
         <p style={{ fontSize: 22, fontWeight: 700, color: "#E8500A", margin: 0,
@@ -642,23 +694,16 @@ function Step3({ vehicleNo, party, items, onBack }) {
         )}
       </div>
 
-      {/* Items list */}
       <div className="flex flex-col gap-2 flex-1 overflow-y-auto">
         {items.map(({ product, qty }) => (
-          <div
-            key={product.product_id}
-            className="flex items-center gap-3 px-4 py-3 rounded-2xl"
-            style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.07)" }}
-          >
-            <span style={{ fontSize: 18, flexShrink: 0 }}>
-              {CAT_EMOJI[product.category] || "📦"}
-            </span>
+          <div key={product.product_id}
+               className="flex items-center gap-3 px-4 py-3 rounded-2xl"
+               style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.07)" }}>
+            <span style={{ fontSize: 18, flexShrink: 0 }}>{CAT_EMOJI[product.category] || "📦"}</span>
             <div className="flex-1 min-w-0">
               <p className="truncate" style={{ margin: 0, fontSize: 13, fontWeight: 600,
                                                color: "#fff", fontFamily: "'DM Sans', sans-serif" }}>
-                {product.brand}
-                {product.spec ? ` ${product.spec}` : ""}
-                {product.type_ ? ` ${product.type_}` : ""}
+                {product.brand}{product.spec ? ` ${product.spec}` : ""}{product.type_ ? ` ${product.type_}` : ""}
               </p>
               <p style={{ margin: 0, fontSize: 11, color: "rgba(255,255,255,0.35)",
                           fontFamily: "'DM Mono', monospace" }}>
@@ -673,11 +718,8 @@ function Step3({ vehicleNo, party, items, onBack }) {
         ))}
       </div>
 
-      {/* Total */}
-      <div
-        className="rounded-2xl px-4 py-3 flex items-center justify-between"
-        style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.07)" }}
-      >
+      <div className="rounded-2xl px-4 py-3 flex items-center justify-between"
+           style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.07)" }}>
         <span style={{ fontSize: 13, color: "rgba(255,255,255,0.5)",
                        fontFamily: "'DM Sans', sans-serif" }}>
           Total items
@@ -688,12 +730,9 @@ function Step3({ vehicleNo, party, items, onBack }) {
         </span>
       </div>
 
-      {/* Errors */}
       {errors.length > 0 && (
-        <div
-          className="rounded-2xl px-4 py-3"
-          style={{ background: "rgba(248,113,113,0.1)", border: "1px solid rgba(248,113,113,0.3)" }}
-        >
+        <div className="rounded-2xl px-4 py-3"
+             style={{ background: "rgba(248,113,113,0.1)", border: "1px solid rgba(248,113,113,0.3)" }}>
           {errors.map((e, i) => (
             <p key={i} style={{ margin: i === 0 ? 0 : "4px 0 0", fontSize: 13,
                                 color: "#F87171", fontFamily: "'DM Sans', sans-serif" }}>
@@ -703,7 +742,6 @@ function Step3({ vehicleNo, party, items, onBack }) {
         </div>
       )}
 
-      {/* Actions */}
       <div className="pb-8 flex flex-col gap-3">
         <GhostBtn onClick={onBack}>← Wapas Jao</GhostBtn>
         <OrangeBtn onClick={handleConfirm} loading={loading}>
@@ -715,29 +753,35 @@ function Step3({ vehicleNo, party, items, onBack }) {
 }
 
 
-// ── Main Challan page (step controller) ───────────────────────────
+// ── Main Challan page ─────────────────────────────────────────────
 export default function Challan() {
   const navigate = useNavigate()
-  const [step, setStep]           = useState(1)
-  const [vehicleNo, setVehicleNo] = useState("")
-  const [party, setParty]         = useState("")
-  const [items, setItems]         = useState([])
 
-  // Auth guard
+  // Fix 2 & 3: all shared state lives here so back-nav preserves everything
+  const [step,      setStep]      = useState(1)
+  const [vehicleNo, setVehicleNo] = useState("")
+  const [party,     setParty]     = useState("")
+  const [items,     setItems]     = useState([])
+
   useEffect(() => {
     if (!localStorage.getItem("auth")) navigate("/login", { replace: true })
   }, [navigate])
 
-  const stepLabel = ["", "Vehicle Details", "Products", "Confirm"][step]
+  // Fix 3: Naya Challan = full reset
+  function handleNewChallan() {
+    setStep(1)
+    setVehicleNo("")
+    setParty("")
+    setItems([])
+  }
 
   return (
-    <div
-      className="min-h-dvh flex flex-col"
-      style={{ backgroundColor: "#0A0A0F", fontFamily: "'DM Sans', sans-serif" }}
-    >
+    <div className="min-h-dvh flex flex-col"
+         style={{ backgroundColor: "#0A0A0F", fontFamily: "'DM Sans', sans-serif" }}>
+
       {/* Header */}
       <div className="flex items-center gap-3 px-5 pt-14 pb-4">
-        <BackArrow onClick={() => (step === 1 ? navigate("/home") : setStep((s) => s - 1))} />
+        <BackArrow onClick={() => step === 1 ? navigate("/home") : setStep((s) => s - 1)} />
         <div className="flex-1">
           <p style={{ fontSize: 11, color: "rgba(255,255,255,0.3)", margin: 0,
                       textTransform: "uppercase", letterSpacing: "0.1em",
@@ -745,17 +789,13 @@ export default function Challan() {
             Delivery Challan
           </p>
         </div>
-        {/* Step pills */}
         <div className="flex gap-1.5">
           {[1, 2, 3].map((s) => (
-            <span
-              key={s}
-              className="rounded-full"
+            <span key={s} className="rounded-full"
               style={{
-                width: s === step ? 20 : 6,
-                height: 6,
-                backgroundColor: s === step ? "#E8500A" : s < step
-                  ? "rgba(232,80,10,0.4)"
+                width: s === step ? 20 : 6, height: 6,
+                backgroundColor: s === step ? "#E8500A"
+                  : s < step ? "rgba(232,80,10,0.4)"
                   : "rgba(255,255,255,0.15)",
                 transition: "all 0.3s ease",
               }}
@@ -764,17 +804,19 @@ export default function Challan() {
         </div>
       </div>
 
-      {/* Step content */}
+      {/* Steps — Fix 2: each step receives current parent state as initial values */}
       {step === 1 && (
         <Step1
+          initialVehicleNo={vehicleNo}
+          initialParty={party}
           onNext={(v, p) => { setVehicleNo(v); setParty(p); setStep(2) }}
-          onBack={() => navigate("/home")}
         />
       )}
       {step === 2 && (
         <Step2
           vehicleNo={vehicleNo}
           party={party}
+          initialItems={items}
           onNext={(selectedItems) => { setItems(selectedItems); setStep(3) }}
           onBack={() => setStep(1)}
         />
@@ -785,6 +827,8 @@ export default function Challan() {
           party={party}
           items={items}
           onBack={() => setStep(2)}
+          onEdit={() => setStep(2)}        // Fix 3: back to step 2, all state intact
+          onNewChallan={handleNewChallan}  // Fix 3: full reset
         />
       )}
     </div>
