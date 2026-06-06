@@ -16,6 +16,9 @@ TELEGRAM_TOKEN = _require("TELEGRAM_TOKEN")
 GROQ_API_KEY = _require("GROQ_API_KEY")
 GOOGLE_SHEET_ID = _require("GOOGLE_SHEET_ID")
 
+SUPABASE_URL = _require("SUPABASE_URL")
+SUPABASE_KEY = _require("SUPABASE_KEY")
+
 # Google credentials stored as full JSON string in env var
 _creds_raw = _require("GOOGLE_CREDENTIALS_JSON")
 

@@ -1,65 +1,141 @@
-import gspread
-from google.oauth2.service_account import Credentials
-from datetime import datetime
+"""
+sheets.py — Supabase backend (drop-in replacement for Google Sheets version).
+All public function signatures are identical to the gspread version so bot.py
+needs zero changes.
+
+Supabase table schema (run once in Supabase SQL Editor):
+──────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS products (
+  id          SERIAL PRIMARY KEY,
+  product_id  TEXT UNIQUE,
+  brand       TEXT NOT NULL DEFAULT '',
+  spec        TEXT DEFAULT '',
+  type_       TEXT DEFAULT '',
+  quantity    INTEGER DEFAULT 0,
+  rate        NUMERIC DEFAULT 0,
+  total       NUMERIC DEFAULT 0,
+  status      TEXT DEFAULT 'No Stock',
+  unit        TEXT DEFAULT 'nos',
+  category    TEXT DEFAULT '',
+  sort_order  INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS transactions (
+  id           SERIAL PRIMARY KEY,
+  timestamp    TIMESTAMPTZ DEFAULT NOW(),
+  type_        TEXT,
+  brand        TEXT,
+  spec         TEXT,
+  qty_change   INTEGER,
+  stock_before INTEGER,
+  stock_after  INTEGER,
+  vehicle_no   TEXT DEFAULT '',
+  operator     TEXT DEFAULT '',
+  party        TEXT DEFAULT ''
+);
+──────────────────────────────────────────────────────
+"""
+
+from supabase import create_client, Client
+from datetime import datetime, timezone, timedelta
 import logging
 import time
 
 logger = logging.getLogger(__name__)
 
-# ── Short-lived row cache (15 sec) — prevents re-reading sheet on every lookup ─
-_rows_cache: list  = []
-_rows_ts: float    = 0.0
-_ROWS_TTL: int     = 15
+IST = timezone(timedelta(hours=5, minutes=30))
+
+# ── Supabase client singleton ─────────────────────────────────────
+_supabase_client: Client = None
+
+def _get_client() -> Client:
+    global _supabase_client
+    if _supabase_client is None:
+        from config import SUPABASE_URL, SUPABASE_KEY
+        _supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    return _supabase_client
+
+
+# ── Row-list conversion ───────────────────────────────────────────
+# Internal format mirrors old gspread row lists so all helpers work unchanged:
+#   index 0 = product_id
+#   index 1 = brand
+#   index 2 = spec
+#   index 3 = type_
+#   index 4 = quantity  (string, as gspread returned strings)
+#   index 5 = rate      (string)
+#   index 6 = total     (string)
+#   index 7 = status
+#   index 8 = unit
+#   index 9 = db id     (int — used as row_idx for UPDATE calls)
+
+def _row_to_list(p: dict) -> list:
+    return [
+        str(p.get("product_id", "") or ""),
+        str(p.get("brand",      "") or ""),
+        str(p.get("spec",       "") or ""),
+        str(p.get("type_",      "") or ""),
+        str(int(p.get("quantity", 0) or 0)),
+        str(p.get("rate",  "") or ""),
+        str(p.get("total", "") or ""),
+        str(p.get("status","") or ""),
+        str(p.get("unit",  "nos") or "nos"),
+        p.get("id", 0),          # int, not string
+    ]
+
+
+# ── Short-lived row cache (15 sec) ────────────────────────────────
+_rows_cache: list = []
+_rows_ts:    float = 0.0
+_ROWS_TTL:   int   = 15
 
 def _get_all_rows() -> list:
-    """Return cached sheet rows (15-second TTL). One read per burst of operations."""
+    """Return cached product rows (15-second TTL). One DB read per burst."""
     global _rows_cache, _rows_ts
     if time.time() - _rows_ts < _ROWS_TTL and _rows_cache:
         return _rows_cache
-    ws = _get_sheet("Stock")
-    if not ws:
-        return _rows_cache
-    _rows_cache = ws.get_all_values()
-    _rows_ts    = time.time()
+    try:
+        resp = _get_client().table("products").select("*").order("sort_order").execute()
+        _rows_cache = [_row_to_list(p) for p in resp.data]
+        _rows_ts    = time.time()
+    except Exception as e:
+        logger.error(f"_get_all_rows failed: {e}")
     return _rows_cache
 
 def _invalidate_rows_cache():
     global _rows_ts
     _rows_ts = 0.0
 
-# ── Product catalog cache (refreshed every 5 min) ─────────────────────────────
+
+# ── Product catalog cache (5 min) ─────────────────────────────────
 _catalog_cache: list = []
-_catalog_ts: float   = 0.0
-_CATALOG_TTL: int    = 300   # seconds
+_catalog_ts:    float = 0.0
+_CATALOG_TTL:   int   = 300
 
 def get_live_catalog() -> list:
     """
     Returns list of dicts: {product_id, brand, spec, type_, unit, qty}
-    Cached for 5 minutes so we don't hammer Sheets API on every message.
+    Cached for 5 minutes.
     """
     global _catalog_cache, _catalog_ts
     if time.time() - _catalog_ts < _CATALOG_TTL and _catalog_cache:
         return _catalog_cache
 
-    ws = _get_sheet("Stock")
-    if not ws:
-        return _catalog_cache  # return stale on error
-
-    rows = ws.get_all_values()
+    rows = _get_all_rows()
     catalog = []
     for row in rows:
-        pid   = row[0].strip() if row else ""
+        pid   = row[0].strip() if row[0] else ""
         brand = row[1].strip() if len(row) > 1 else ""
         spec  = row[2].strip() if len(row) > 2 else ""
         type_ = row[3].strip() if len(row) > 3 else ""
         qty_s = row[4].strip() if len(row) > 4 else ""
-        unit  = row[8].strip() if len(row) > 8 else ""
-        if not pid or pid == "product_id" or not brand:
+        unit  = row[8].strip() if len(row) > 8 and isinstance(row[8], str) else ""
+        if not pid or not brand:
             continue
         try:    qty = int(qty_s)
         except: qty = 0
         catalog.append({"product_id": pid, "brand": brand, "spec": spec,
-                         "type_": type_, "unit": unit, "qty": qty})
+                        "type_": type_, "unit": unit, "qty": qty})
 
     _catalog_cache = catalog
     _catalog_ts    = time.time()
@@ -68,7 +144,7 @@ def get_live_catalog() -> list:
 
 
 def catalog_as_prompt_text() -> str:
-    """Compact product list for injecting into Groq prompt."""
+    """Compact product list for Groq prompt injection."""
     cat = get_live_catalog()
     lines = []
     for p in cat:
@@ -76,12 +152,8 @@ def catalog_as_prompt_text() -> str:
         lines.append(f'{p["product_id"]}: {" | ".join(parts)} ({p["unit"]})')
     return "\n".join(lines)
 
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
-]
 
-# Col B values that indicate a category/section header row — skip these
+# ── Constants (kept for any external callers) ─────────────────────
 HEADER_KEYWORDS = {
     "solar panel", "inverter", "acdb/dcdb", "cable", "cables", "dc cable",
     "ac cable", "ac cable 4sx2c", "earthing cable", "pvc material",
@@ -89,116 +161,53 @@ HEADER_KEYWORDS = {
     "meters", "pcs", "quantity", "stock status", "rate", "total"
 }
 
-# Col C spec values that indicate a header row — skip these
 HEADER_SPEC_KEYWORDS = {
     "watt", "kw", "meter", "meters", "pcs", "spec", "quantity",
     "stock status", "rate", "total", "type"
 }
 
-
-def _client():
-    from config import GOOGLE_CREDENTIALS
-    creds = Credentials.from_service_account_info(GOOGLE_CREDENTIALS, scopes=SCOPES)
-    return gspread.authorize(creds)
-
-
-def _get_sheet(sheet_name="Stock"):
-    from config import GOOGLE_SHEET_ID
-    spreadsheet = _client().open_by_key(GOOGLE_SHEET_ID)
-    try:
-        return spreadsheet.worksheet(sheet_name)
-    except gspread.WorksheetNotFound:
-        return None
-
-
-TRANSACTION_HEADERS = [
-    "Timestamp", "Type", "Brand", "Spec",
-    "Qty Change", "Stock Before", "Stock After",
-    "Vehicle No", "Operator", "Party"
-]
-
-# Maps category keywords → header text in sheet
 CATEGORY_HEADERS = {
-    "solar panel": "Solar Panel",
-    "solar":       "Solar Panel",
-    "panel":       "Solar Panel",
-    "inverter":    "Inverter",
-    "acdb":        "ACDB/DCDB",
-    "dcdb":        "ACDB/DCDB",
-    "acdb/dcdb":   "ACDB/DCDB",
-    "cable":       "Cable",
-    "cables":      "Cable",
-    "wire":        "Cable",
-    "pvc":         "PVC Material",
-    "pvc material":"PVC Material",
-    "structure":   "Structure",
-    "mounting":    "Structure",
-    "hardware":    "Structure",
+    "solar panel":  "Solar Panel",
+    "solar":        "Solar Panel",
+    "panel":        "Solar Panel",
+    "inverter":     "Inverter",
+    "acdb":         "ACDB/DCDB",
+    "dcdb":         "ACDB/DCDB",
+    "acdb/dcdb":    "ACDB/DCDB",
+    "cable":        "Cable",
+    "cables":       "Cable",
+    "wire":         "Cable",
+    "pvc":          "PVC Material",
+    "pvc material": "PVC Material",
+    "structure":    "Structure",
+    "mounting":     "Structure",
+    "hardware":     "Structure",
 }
 
-def _get_or_create_transactions_sheet():
-    from config import GOOGLE_SHEET_ID
-    spreadsheet = _client().open_by_key(GOOGLE_SHEET_ID)
-    try:
-        ws = spreadsheet.worksheet("Transacation")
-        # Row 1 now has product_id in col A; actual headers start at col B
-        current_headers = ws.row_values(1)
-        # If col B onwards don't match expected headers, rewrite (but keep product_id in A)
-        if current_headers[1:len(TRANSACTION_HEADERS)+1] != TRANSACTION_HEADERS:
-            ws.update("B1", [TRANSACTION_HEADERS])
-        return ws
-    except gspread.WorksheetNotFound:
-        ws = spreadsheet.add_worksheet(title="Transacation", rows=1000, cols=11)
-        ws.update("A1", [["product_id"] + TRANSACTION_HEADERS])
-        return ws
 
-
+# ── Row helpers (signatures unchanged) ───────────────────────────
 def _is_product_row(row: list) -> bool:
-    """
-    Sheet columns: A=product_id, B=Brand, C=Spec, D=Type, E=Qty, F=Rate, G=Total, H=Status, I=Unit
-    Product rows have a non-empty product_id in col A (index 0).
-    Header/section rows have an empty col A.
-    """
+    """In Supabase all fetched rows are product rows — just check non-empty."""
     if len(row) < 2:
         return False
-
-    product_id = str(row[0]).strip()   # col A = product_id
-    brand_raw  = str(row[1]).strip()   # col B = Brand
-
-    # Product rows always have a product_id (e.g. "SP-WAR-001")
-    if not product_id:
-        return False
-
-    if not brand_raw:
-        return False
-
-    brand_lower = brand_raw.lower().strip()
-    if brand_lower in HEADER_KEYWORDS:
-        return False
-
-    return True
+    return bool(str(row[0]).strip() and str(row[1]).strip())
 
 
 def _normalize(text: str) -> str:
     return str(text).strip().lower().replace(" ", "")
 
 
-def _specs_match(row_spec: str, row_type: str, query_spec: str, query_type: str) -> bool:
-    """
-    Fuzzy match spec and type between sheet row and query.
-    Handles: "575" vs "575w", "3kw" vs "3KW", "1P" vs "1p", "N-DCR" vs "n-dcr"
-    If query_spec is empty, match any spec (user only specified the brand).
-    """
+def _specs_match(row_spec: str, row_type: str,
+                 query_spec: str, query_type: str) -> bool:
+    """Fuzzy spec+type match (same logic as before)."""
     rs = _normalize(row_spec)
     rt = _normalize(row_type).replace("-", "")
     qs = _normalize(query_spec)
     qt = _normalize(query_type).replace("-", "")
 
-    # Empty spec = user didn't specify → match any
-    if not qs:
+    if not qs:          # user didn't specify spec → match any
         return True
 
-    # Strip units for numeric comparison
     rs_num = rs.replace("w", "").replace("kw", "").replace("k", "")
     qs_num = qs.replace("w", "").replace("kw", "").replace("k", "")
 
@@ -217,194 +226,172 @@ def _specs_match(row_spec: str, row_type: str, query_spec: str, query_type: str)
     return spec_match and type_match
 
 
+# ── Core lookup ───────────────────────────────────────────────────
 def find_product_row(brand: str, spec: str, type_: str, product_id: str = ""):
     """
-    Find a product row. Tries product_id direct lookup first (instant),
-    then falls back to brand+spec fuzzy search.
-    Returns (row_index_1based, row_data) or (None, None)
+    Returns (db_id, row_list) or (None, None).
+    db_id is the Supabase primary key used for all UPDATE calls.
     """
-    ws = _get_sheet("Stock")
-    if not ws:
-        return None, None
-
     all_rows = _get_all_rows()
 
-    # Fast path: direct product_id lookup (O(n) scan but exact match)
+    # Fast path: direct product_id match
     if product_id:
-        for i, row in enumerate(all_rows):
+        for row in all_rows:
             if row and row[0].strip() == product_id:
-                return i + 1, row
+                return row[9], row     # row[9] = db id
 
-    def _search(brand_q):
-        brand_q_norm = _normalize(brand_q)
-        for i, row in enumerate(all_rows):
+    def _search(brand_q: str):
+        bq = _normalize(brand_q)
+        for row in all_rows:
             if not _is_product_row(row):
                 continue
-            row_brand = _normalize(row[1])        # col B = Brand
-            if brand_q_norm not in row_brand and row_brand not in brand_q_norm:
+            rb = _normalize(row[1])
+            if bq not in rb and rb not in bq:
                 continue
-            row_spec = str(row[2]).strip() if len(row) > 2 else ""   # col C
-            row_type = str(row[3]).strip() if len(row) > 3 else ""   # col D
-            if _specs_match(row_spec, row_type, spec, type_):
-                return i + 1, row
+            rs = str(row[2]).strip() if len(row) > 2 else ""
+            rt = str(row[3]).strip() if len(row) > 3 else ""
+            if _specs_match(rs, rt, spec, type_):
+                return row[9], row
         return None, None
 
-    # Primary search
-    row_idx, row = _search(brand)
-    if row_idx:
-        return row_idx, row
+    db_id, row = _search(brand)
+    if db_id:
+        return db_id, row
 
-    # Fallback: if brand has both a manufacturer AND "acdb"/"dcdb",
-    # retry with just the product type (e.g. "Polycab ACDB" → "ACDB")
+    # Fallback: if brand contains acdb/dcdb, retry with just that keyword
     brand_lower = brand.lower()
-    for keyword in ["acdb", "dcdb"]:
-        if keyword in brand_lower and brand_lower != keyword:
-            row_idx, row = _search(keyword.upper())
-            if row_idx:
-                return row_idx, row
+    for kw in ["acdb", "dcdb"]:
+        if kw in brand_lower and brand_lower != kw:
+            db_id, row = _search(kw.upper())
+            if db_id:
+                return db_id, row
 
-    # Fallback: if brand is a manufacturer name (Polycab/Waaree etc.) but
-    # spec contains "acdb" or "dcdb", try brand="ACDB"/"DCDB" with remaining spec
+    # Fallback: spec contains acdb/dcdb
     spec_lower = spec.lower()
-    for keyword in ["acdb", "dcdb"]:
-        if keyword in spec_lower:
-            clean_spec = spec_lower.replace(keyword, "").strip()
-            row_idx, row = _search(keyword.upper())
-            if row_idx:
-                return row_idx, row
+    for kw in ["acdb", "dcdb"]:
+        if kw in spec_lower:
+            db_id, row = _search(kw.upper())
+            if db_id:
+                return db_id, row
 
     return None, None
 
 
 def get_all_products_by_brand(brand: str) -> list:
-    """Return all products of a given brand from the sheet."""
-    ws = _get_sheet("Stock")
-    if not ws:
-        return []
+    """Return all products matching the given brand."""
     all_rows = _get_all_rows()
-    brand_q = _normalize(brand)
+    bq = _normalize(brand)
     results = []
-    for i, row in enumerate(all_rows):
+    for row in all_rows:
         if not _is_product_row(row):
             continue
-        row_brand = _normalize(row[1])            # col B = Brand
-        if brand_q in row_brand or row_brand in brand_q:
-            qty = int(row[4]) if len(row) > 4 and str(row[4]).isdigit() else 0
+        rb = _normalize(row[1])
+        if bq in rb or rb in bq:
+            qty = int(row[4]) if str(row[4]).isdigit() else 0
             results.append({
-                "brand": row[1].strip(), "spec": row[2].strip(),
-                "type": row[3].strip(), "quantity": qty, "row_idx": i + 1, "score": 10
+                "brand":    row[1].strip(),
+                "spec":     row[2].strip(),
+                "type":     row[3].strip(),
+                "quantity": qty,
+                "row_idx":  row[9],
+                "score":    10
             })
     return results
 
 
 def search_similar_products(brand: str, spec: str, type_: str, top_n: int = 4) -> list:
-    """
-    Fuzzy search — returns top_n closest products when exact match fails.
-    Brand match is dominant — if brand matches, only brand-matching rows are returned.
-    """
-    ws = _get_sheet("Stock")
-    if not ws:
-        return []
-
+    """Fuzzy search — returns closest products when exact match fails."""
     all_rows = _get_all_rows()
-    brand_q = _normalize(brand)
-    spec_q  = _normalize(spec).replace("w", "").replace("kw", "")
-    type_q  = _normalize(type_).replace("-", "")
+    bq     = _normalize(brand)
+    spec_q = _normalize(spec).replace("w", "").replace("kw", "")
+    type_q = _normalize(type_).replace("-", "")
 
     scored = []
-    for i, row in enumerate(all_rows):
+    for row in all_rows:
         if not _is_product_row(row):
             continue
-        row_brand = _normalize(row[1])            # col B = Brand
-        row_spec  = _normalize(str(row[2])).replace("w", "").replace("kw", "")  # col C
-        row_type  = _normalize(str(row[3])).replace("-", "")                     # col D
+        rb    = _normalize(row[1])
+        rspec = _normalize(str(row[2])).replace("w", "").replace("kw", "")
+        rtype = _normalize(str(row[3])).replace("-", "")
 
-        acdb_fallback = any(kw in brand_q for kw in ["acdb", "dcdb"]) and (
-            "acdb" in row_brand or "dcdb" in row_brand
+        acdb_fallback = any(kw in bq for kw in ["acdb", "dcdb"]) and (
+            "acdb" in rb or "dcdb" in rb
         )
-        if brand_q in row_brand or row_brand in brand_q or acdb_fallback:
+        if bq in rb or rb in bq or acdb_fallback:
             brand_score = 10
         else:
             continue
 
         spec_score = 0
-        if spec_q and spec_q == row_spec:
-            spec_score = 3
-        elif spec_q and (spec_q in row_spec or row_spec in spec_q):
-            spec_score = 2
-        elif spec_q and len(spec_q) >= 2 and row_spec.startswith(spec_q[:2]):
-            spec_score = 1
+        if spec_q and spec_q == rspec:                              spec_score = 3
+        elif spec_q and (spec_q in rspec or rspec in spec_q):      spec_score = 2
+        elif spec_q and len(spec_q) >= 2 and rspec.startswith(spec_q[:2]): spec_score = 1
 
-        type_score = 1 if (not type_q or not row_type or type_q == row_type) else 0
-
-        score = brand_score + spec_score + type_score
-        qty = int(row[4]) if len(row) > 4 and str(row[4]).isdigit() else 0  # col E
+        type_score = 1 if (not type_q or not rtype or type_q == rtype) else 0
+        qty = int(row[4]) if str(row[4]).isdigit() else 0
         scored.append({
             "brand":    row[1].strip(),
             "spec":     row[2].strip(),
             "type":     row[3].strip(),
             "quantity": qty,
-            "row_idx":  i + 1,
-            "score":    score
+            "row_idx":  row[9],
+            "score":    brand_score + spec_score + type_score
         })
 
     scored.sort(key=lambda x: x["score"], reverse=True)
     return scored[:top_n]
 
 
+# ── Stock read ────────────────────────────────────────────────────
 def get_stock(brand: str, spec: str, type_: str, product_id: str = "") -> dict:
-    row_idx, row = find_product_row(brand, spec, type_, product_id)
-    if row_idx is None:
+    db_id, row = find_product_row(brand, spec, type_, product_id)
+    if db_id is None:
         return {"found": False, "brand": brand, "spec": spec, "type": type_}
 
-    qty_raw = str(row[4]).strip() if len(row) > 4 else "0"   # col E = Quantity
-    qty = int(qty_raw) if qty_raw.isdigit() else 0
-    rate   = row[5].strip() if len(row) > 5 else "N/A"       # col F = Rate
-    status = row[7].strip() if len(row) > 7 else ""           # col H = Stock Status
-    unit   = row[8].strip() if len(row) > 8 and row[8] else "nos"  # col I = Unit
+    qty_raw = str(row[4]).strip() if len(row) > 4 else "0"
+    qty     = int(qty_raw) if qty_raw.isdigit() else 0
+    rate    = row[5].strip() if len(row) > 5 else "N/A"
+    status  = row[7].strip() if len(row) > 7 else ""
+    unit    = row[8].strip() if len(row) > 8 and isinstance(row[8], str) else "nos"
 
     return {
-        "found": True,
-        "brand": row[1].strip(),   # col B
-        "spec":  row[2].strip(),   # col C
-        "type":  row[3].strip(),   # col D
+        "found":    True,
+        "brand":    row[1].strip(),
+        "spec":     row[2].strip(),
+        "type":     row[3].strip(),
         "quantity": qty,
-        "unit": unit,
-        "rate": rate,
-        "status": status,
-        "row_idx": row_idx
+        "unit":     unit,
+        "rate":     rate,
+        "status":   status,
+        "row_idx":  db_id,       # Supabase id — used by batch_deduct_all
     }
 
 
+# ── Stock write helpers ───────────────────────────────────────────
+def _status_for(qty: int) -> str:
+    if qty == 0:   return "No Stock"
+    if qty < 5:    return "Low Stock"
+    return "In Stock"
+
+
 def update_quantity(row_idx: int, new_qty: int):
-    """Update qty + status in ONE batch call to avoid partial-update failures."""
-    ws = _get_sheet("Stock")
-    if new_qty == 0:
-        status = "No Stock"
-    elif new_qty < 5:
-        status = "Low Stock"
-    else:
-        status = "In Stock"
+    """Update quantity + status + total for a product (by Supabase id)."""
+    status = _status_for(new_qty)
     try:
-        # Col E=qty, Col F=rate, Col G=total, Col H=status
-        row = ws.row_values(row_idx)
-        rate_raw = row[5].strip() if len(row) > 5 else ""    # col F = Rate
-        try:
-            rate = float(str(rate_raw).replace(",", "").replace("₹", "").strip() or 0)
-            total = int(new_qty * rate) if rate > 0 else ""
-        except Exception:
-            total = ""
-        updates = [{"range": f"E{row_idx}", "values": [[new_qty]]},   # col E = Qty
-                   {"range": f"H{row_idx}", "values": [[status]]}]    # col H = Status
-        if total != "":
-            updates.append({"range": f"G{row_idx}", "values": [[total]]})  # col G = Total
-        ws.batch_update(updates)
+        client = _get_client()
+        # Fetch current rate to recompute total
+        resp = client.table("products").select("rate").eq("id", row_idx).single().execute()
+        rate = float(resp.data.get("rate", 0) or 0)
+        total = int(new_qty * rate) if rate > 0 else 0
+
+        client.table("products").update({
+            "quantity": new_qty,
+            "status":   status,
+            "total":    total,
+        }).eq("id", row_idx).execute()
+        _invalidate_rows_cache()
     except Exception as e:
-        logger.warning(f"batch update failed, trying single cell: {e}")
-        try:
-            ws.update_cell(row_idx, 5, new_qty)   # col E (1-indexed = 5)
-        except Exception as e2:
-            logger.error(f"update_quantity failed completely: {e2}")
+        logger.error(f"update_quantity failed (id={row_idx}): {e}")
 
 
 def update_rate(brand: str, spec: str, type_: str, rate: int) -> dict:
@@ -412,25 +399,34 @@ def update_rate(brand: str, spec: str, type_: str, rate: int) -> dict:
     if not info["found"]:
         return {"success": False, "error": f"Nahi mila: {brand} {spec} {type_}"}
 
-    ws = _get_sheet("Stock")
-    row_idx = info["row_idx"]
-    qty = info["quantity"]
-    ws.update_cell(row_idx, 6, rate)                          # col F = Rate
-    ws.update_cell(row_idx, 7, qty * rate if qty else 0)     # col G = Total
+    try:
+        qty = info["quantity"]
+        _get_client().table("products").update({
+            "rate":  rate,
+            "total": qty * rate if qty else 0,
+        }).eq("id", info["row_idx"]).execute()
+        _invalidate_rows_cache()
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
     return {
-        "success": True,
-        "brand": info["brand"], "spec": info["spec"], "type": info["type"],
-        "rate": rate, "quantity": qty
+        "success":  True,
+        "brand":    info["brand"],
+        "spec":     info["spec"],
+        "type":     info["type"],
+        "rate":     rate,
+        "quantity": info["quantity"],
     }
 
 
-def add_stock(brand: str, spec: str, type_: str, quantity: int, operator: str, party: str = "", product_id: str = "") -> dict:
+def add_stock(brand: str, spec: str, type_: str, quantity: int,
+              operator: str, party: str = "", product_id: str = "") -> dict:
     info = get_stock(brand, spec, type_, product_id)
     if not info["found"]:
         return {"success": False, "error": f"Nahi mila: {brand} {spec} {type_}"}
 
     before = info["quantity"]
-    after = before + quantity
+    after  = before + quantity
     update_quantity(info["row_idx"], after)
 
     _log_transaction(
@@ -442,13 +438,17 @@ def add_stock(brand: str, spec: str, type_: str, quantity: int, operator: str, p
         after=after,
         vehicle_no="",
         operator=operator,
-        party=party
+        party=party,
     )
     return {
-        "success": True,
-        "brand": info["brand"], "spec": info["spec"], "type": info["type"],
-        "before": before, "after": after, "quantity": quantity,
-        "unit": info.get("unit", "nos")
+        "success":  True,
+        "brand":    info["brand"],
+        "spec":     info["spec"],
+        "type":     info["type"],
+        "before":   before,
+        "after":    after,
+        "quantity": quantity,
+        "unit":     info.get("unit", "nos"),
     }
 
 
@@ -458,16 +458,16 @@ def deduct_stock(brand: str, spec: str, type_: str, quantity: int,
     if not info["found"]:
         return {
             "success": False,
-            "error": f"Nahi mila: {brand} {spec} {type_}",
-            "brand": brand, "spec": spec, "type": type_
+            "error":   f"Nahi mila: {brand} {spec} {type_}",
+            "brand": brand, "spec": spec, "type": type_,
         }
 
     before = info["quantity"]
     if before < quantity:
         return {
             "success": False,
-            "error": f"Kam stock: {info['brand']} {info['spec']} — Hai {before}, chahiye {quantity}",
-            "brand": info["brand"], "spec": info["spec"], "type": info["type"]
+            "error":   f"Kam stock: {info['brand']} {info['spec']} — Hai {before}, chahiye {quantity}",
+            "brand": info["brand"], "spec": info["spec"], "type": info["type"],
         }
 
     after = before - quantity
@@ -482,135 +482,93 @@ def deduct_stock(brand: str, spec: str, type_: str, quantity: int,
         after=after,
         vehicle_no=vehicle_no,
         operator=operator,
-        party=party
+        party=party,
     )
     return {
-        "success": True,
-        "brand": info["brand"], "spec": info["spec"], "type": info["type"],
-        "before": before, "after": after, "quantity": quantity,
-        "rate": info["rate"], "unit": info.get("unit", "nos")
+        "success":  True,
+        "brand":    info["brand"],
+        "spec":     info["spec"],
+        "type":     info["type"],
+        "before":   before,
+        "after":    after,
+        "quantity": quantity,
+        "rate":     info["rate"],
+        "unit":     info.get("unit", "nos"),
     }
 
 
 def batch_deduct_all(pre_checked: list, vehicle_no: str, operator: str, party: str) -> tuple:
     """
-    Deduct stock for ALL items in ONE batch Google Sheets API call.
-    Returns (results, errors) where results are successful deductions.
-    pre_checked items must have: brand, spec, type, quantity, product_id, unit, row_idx, before_qty
+    Deduct stock for ALL items. Each update is a single PK-based query —
+    no rate limits, no batch-size cap (unlike Google Sheets).
+    Returns (results, errors).
     """
-    ws = _get_sheet("Stock")
-    if not ws:
-        return [], ["Google Sheets connection failed"]
-
+    client  = _get_client()
     results = []
     errors  = []
-    updates = []   # all cell updates collected here
 
     for item in pre_checked:
-        row_idx  = item["row_idx"]
-        new_qty  = item["before_qty"] - item["quantity"]
-        status   = "No Stock" if new_qty == 0 else ("Low Stock" if new_qty < 5 else "In Stock")
+        db_id   = item["row_idx"]
+        new_qty = item["before_qty"] - item["quantity"]
+        status  = _status_for(new_qty)
         rate_raw = item.get("rate", "")
         try:
             rate  = float(str(rate_raw).replace(",", "").replace("₹", "").strip() or 0)
-            total = int(new_qty * rate) if rate > 0 else None
+            total = int(new_qty * rate) if rate > 0 else 0
         except Exception:
-            total = None
+            rate  = 0
+            total = 0
 
-        updates.append({"range": f"E{row_idx}", "values": [[new_qty]]})
-        updates.append({"range": f"H{row_idx}", "values": [[status]]})
-        if total is not None:
-            updates.append({"range": f"G{row_idx}", "values": [[total]]})
+        try:
+            client.table("products").update({
+                "quantity": new_qty,
+                "status":   status,
+                "total":    total,
+            }).eq("id", db_id).execute()
 
-        results.append({
-            "success": True,
-            "brand":  item["brand"], "spec": item["spec"], "type": item["type"],
-            "before": item["before_qty"], "after": new_qty,
-            "quantity": item["quantity"], "rate": rate_raw,
-            "unit": item.get("unit", "nos")
-        })
+            results.append({
+                "success":  True,
+                "brand":    item["brand"],
+                "spec":     item["spec"],
+                "type":     item["type"],
+                "before":   item["before_qty"],
+                "after":    new_qty,
+                "quantity": item["quantity"],
+                "rate":     rate_raw,
+                "unit":     item.get("unit", "nos"),
+            })
+        except Exception as e:
+            errors.append(f"Update failed for {item['brand']} {item['spec']}: {e}")
 
-    if not updates:
-        return [], ["No items to deduct"]
+    _invalidate_rows_cache()
 
-    try:
-        ws.batch_update(updates)
-        _invalidate_rows_cache()   # force fresh read on next lookup
-    except Exception as e:
-        logger.error(f"batch_deduct_all failed: {e}")
-        return [], [f"Sheet write failed: {e}"]
-
-    # Log all transactions
+    # Log all successful transactions
     for item, result in zip(pre_checked, results):
-        _log_transaction(
-            type_="SHIP_OUT",
-            brand=item["brand"],
-            spec=f"{item['spec']} {item['type']}",
-            qty_change=-item["quantity"],
-            before=item["before_qty"],
-            after=result["after"],
-            vehicle_no=vehicle_no,
-            operator=operator,
-            party=party
-        )
+        if result.get("success"):
+            _log_transaction(
+                type_="SHIP_OUT",
+                brand=item["brand"],
+                spec=f"{item['spec']} {item['type']}",
+                qty_change=-item["quantity"],
+                before=item["before_qty"],
+                after=result["after"],
+                vehicle_no=vehicle_no,
+                operator=operator,
+                party=party,
+            )
 
     return results, errors
 
 
-def add_new_product(category: str, brand: str, spec: str, type_: str, operator: str, unit: str = "nos", init_qty: int = 0) -> dict:
-    ws = _get_sheet("Stock")
-    if not ws:
-        return {"success": False, "error": "Stock sheet nahi mili"}
-
-    all_rows = _get_all_rows()
+def add_new_product(category: str, brand: str, spec: str, type_: str,
+                    operator: str, unit: str = "nos", init_qty: int = 0) -> dict:
     cat_key    = category.strip().lower()
     target_cat = CATEGORY_HEADERS.get(cat_key, category)
-    brand_norm = _normalize(brand)
 
-    # Scan for category section, then find last product row in it
-    in_section  = False
-    section_end = None   # 1-based row number of last product row in section
-    brand_end   = None   # 1-based row number of last matching-brand row in section
-
-    # ── Find last product row in the target section ───────────────────────────
-    for i, row in enumerate(all_rows):
-        pid   = str(row[0]).strip() if row else ""
-        col_b = str(row[1]).strip() if len(row) > 1 else ""
-        combined = col_b.lower()
-
-        if not pid and target_cat.lower() in combined:
-            in_section = True
-            section_end = None
-            brand_end   = None
-            continue
-
-        if not in_section:
-            continue
-
-        # Stop when the next major section header is hit
-        if not pid and combined.strip() and any(
-            h.lower() in combined
-            for h in ["solar panel", "inverter", "acdb", "cable", "pvc material", "structure"]
-        ) and target_cat.lower() not in combined:
-            break
-
-        if _is_product_row(row):
-            section_end = i + 1   # 1-based
-            if brand_norm in _normalize(col_b) or _normalize(col_b) in brand_norm:
-                brand_end = i + 1
-
-    # Insert immediately after brand group (preferred) or after section
-    insert_after = brand_end if brand_end is not None else section_end
-    if insert_after is None:
-        # Section not found — append to end
-        insert_after = len(all_rows)
-
-    target_row = insert_after + 1   # new row goes HERE (1-based)
-
-    # ── Auto-generate product_id ──────────────────────────────────────────────
     CAT_CODES = {
-        "solar panel": "SP", "inverter": "INV", "acdb": "ACDB", "dcdb": "DCDB",
-        "cable": "CAB", "pvc material": "PVC", "structure": "STR",
+        "solar panel": "SP",  "inverter": "INV",  "acdb": "ACDB",
+        "dcdb":        "DCDB","acdb/dcdb":"ACDB",  "cable": "CAB",
+        "pvc material":"PVC", "structure":"STR",
     }
     BRAND_CODES = {
         "waaree":"WAR","adani":"ADN","citizen":"CTZ","polycab":"PCB",
@@ -619,216 +577,160 @@ def add_new_product(category: str, brand: str, spec: str, type_: str, operator: 
     }
     cat_code   = CAT_CODES.get(cat_key, "GEN")
     brand_code = BRAND_CODES.get(brand.strip().lower(), "GEN")
+    prefix     = f"{cat_code}-{brand_code}-"
 
-    # Count existing product_ids with this prefix to get next number
-    prefix = f"{cat_code}-{brand_code}-"
-    existing_nums = []
-    for row in all_rows:
-        pid = str(row[0]).strip()
-        if pid.startswith(prefix):
-            try:
-                existing_nums.append(int(pid.split("-")[-1]))
-            except ValueError:
-                pass
-    next_num   = max(existing_nums, default=0) + 1
-    product_id = f"{prefix}{next_num:03d}"
-
-    # ── Insert a blank row at target_row (pushes everything below down) ───────
     try:
-        from config import GOOGLE_SHEET_ID
-        spreadsheet = _client().open_by_key(GOOGLE_SHEET_ID)
-        sheet_id    = ws.id
+        client = _get_client()
 
-        # Find a product row above to copy formatting from
-        copy_from = None
-        for i in range(insert_after - 1, -1, -1):
-            if i < len(all_rows) and str(all_rows[i][0]).strip():
-                copy_from = i + 1   # 1-based
-                break
+        # Auto-generate product_id: scan existing IDs with same prefix
+        resp = client.table("products").select("product_id") \
+                     .like("product_id", f"{prefix}%").execute()
+        existing_nums = []
+        for row in resp.data:
+            pid = row.get("product_id", "")
+            if pid.startswith(prefix):
+                try:    existing_nums.append(int(pid.split("-")[-1]))
+                except: pass
+        product_id = f"{prefix}{max(existing_nums, default=0) + 1:03d}"
 
-        # Insert the new row
-        spreadsheet.batch_update({"requests": [{
-            "insertDimension": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "dimension": "ROWS",
-                    "startIndex": target_row - 1,
-                    "endIndex": target_row
-                },
-                "inheritFromBefore": True   # copies format from the row above
-            }
-        }]})
+        # sort_order: place after last product in same category
+        resp2 = client.table("products").select("sort_order") \
+                      .eq("category", target_cat) \
+                      .order("sort_order", desc=True).limit(1).execute()
+        if resp2.data:
+            sort_order = (resp2.data[0].get("sort_order") or 0) + 1
+        else:
+            resp3 = client.table("products").select("sort_order") \
+                          .order("sort_order", desc=True).limit(1).execute()
+            sort_order = (resp3.data[0].get("sort_order") or 0) + 1 if resp3.data else 1
 
-        # If we have a source row for formatting, explicitly copy it
-        if copy_from:
-            spreadsheet.batch_update({"requests": [{
-                "copyPaste": {
-                    "source": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": copy_from - 1,
-                        "endRowIndex": copy_from,
-                        "startColumnIndex": 0,
-                        "endColumnIndex": 9
-                    },
-                    "destination": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": target_row - 1,
-                        "endRowIndex": target_row,
-                        "startColumnIndex": 0,
-                        "endColumnIndex": 9
-                    },
-                    "pasteType": "PASTE_FORMAT"
-                }
-            }]})
+        qty    = init_qty if init_qty > 0 else 0
+        status = _status_for(qty)
 
+        client.table("products").insert({
+            "product_id": product_id,
+            "brand":      brand,
+            "spec":       spec,
+            "type_":      type_,
+            "quantity":   qty,
+            "rate":       0,
+            "total":      0,
+            "status":     status,
+            "unit":       unit,
+            "category":   target_cat,
+            "sort_order": sort_order,
+        }).execute()
+
+        # Invalidate both caches
+        global _catalog_ts
+        _catalog_ts = 0.0
+        _invalidate_rows_cache()
+
+        return {
+            "success":    True,
+            "brand":      brand,
+            "spec":       spec,
+            "type":       type_,
+            "category":   target_cat,
+            "unit":       unit,
+            "row":        sort_order,
+            "quantity":   qty,
+            "product_id": product_id,
+        }
     except Exception as e:
-        logger.warning(f"Row insert/format failed: {e}")
-
-    # ── Write data ────────────────────────────────────────────────────────────
-    qty = init_qty if init_qty > 0 else 0
-    if qty == 0:   status = "No Stock"
-    elif qty < 5:  status = "Low Stock"
-    else:          status = "In Stock"
-
-    new_row = [brand, spec, type_, qty, "", "", status, unit]
-    ws.batch_update([
-        {"range": f"A{target_row}", "values": [[product_id]]},
-        {"range": f"B{target_row}:I{target_row}", "values": [new_row]},
-    ])
-
-    # Invalidate catalog cache so the new product is visible immediately
-    global _catalog_ts
-    _catalog_ts = 0.0
-
-    return {"success": True, "brand": brand, "spec": spec, "type": type_,
-            "category": target_cat, "unit": unit, "row": target_row,
-            "quantity": qty, "product_id": product_id}
+        logger.error(f"add_new_product failed: {e}")
+        return {"success": False, "error": str(e)}
 
 
 def get_full_stock() -> list:
-    """
-    Returns all product rows grouped by section.
-    Each entry: {section, brand, spec, type, quantity, unit, status}
-    """
-    ws = _get_sheet("Stock")
-    if not ws:
+    """Returns all products with section = category name."""
+    try:
+        resp = _get_client().table("products").select("*").order("sort_order").execute()
+        results = []
+        for p in resp.data:
+            qty = int(p.get("quantity", 0) or 0)
+            results.append({
+                "section":  p.get("category", "General"),
+                "brand":    str(p.get("brand", "") or ""),
+                "spec":     str(p.get("spec",  "") or ""),
+                "type":     str(p.get("type_", "") or ""),
+                "quantity": qty,
+                "unit":     str(p.get("unit",  "nos") or "nos"),
+            })
+        return results
+    except Exception as e:
+        logger.error(f"get_full_stock failed: {e}")
         return []
-
-    all_rows = _get_all_rows()
-    current_section = "General"
-    results = []
-
-    for row in all_rows:
-        # col A = product_id (empty for headers), col B = Brand or section label
-        pid   = str(row[0]).strip() if row else ""
-        col_b = str(row[1]).strip() if len(row) > 1 else ""
-
-        # Detect section header: no product_id + col B has section keyword
-        if not pid and col_b:
-            col_b_lower = col_b.lower()
-            for sec in ["Solar Panel", "Inverter", "ACDB", "DCDB", "Cable", "PVC Material", "Structure"]:
-                if sec.lower() in col_b_lower:
-                    current_section = sec
-                    break
-            continue
-
-        if not _is_product_row(row):
-            continue
-
-        qty_raw = str(row[4]).strip() if len(row) > 4 else "0"   # col E = Qty
-        qty = int(qty_raw) if qty_raw.isdigit() else 0
-        unit = str(row[8]).strip() if len(row) > 8 and row[8] else "nos"  # col I = Unit
-
-        results.append({
-            "section":  current_section,
-            "brand":    col_b,
-            "spec":     str(row[2]).strip() if len(row) > 2 else "",   # col C
-            "type":     str(row[3]).strip() if len(row) > 3 else "",   # col D
-            "quantity": qty,
-            "unit":     unit,
-        })
-
-    return results
 
 
 def get_party_summary(party_name: str) -> dict:
-    """
-    Returns all transactions for a party (fuzzy name match).
-    Summarizes: total purchased (ADD_IN), total sold (SHIP_OUT), product-wise breakdown.
-    """
+    """All transactions for a party (fuzzy name match)."""
     try:
-        ws = _get_or_create_transactions_sheet()
-        rows = ws.get_all_values()
+        resp = _get_client().table("transactions").select("*") \
+                            .order("timestamp").execute()
     except Exception as e:
         return {"error": str(e)}
 
-    if len(rows) < 2:
-        return {"found": False, "party": party_name}
-
-    headers = rows[0]
     party_norm = _normalize(party_name)
+    purchases  = []
+    sales      = []
 
-    purchases = []   # ADD_IN rows matching party
-    sales     = []   # SHIP_OUT rows matching party
-
-    for row in rows[1:]:
-        if len(row) < 11:
-            continue
-        # product_id now in col A (index 0); data cols shifted +1
-        row_party = _normalize(str(row[10]))  # col K = Party
-        if not row_party or party_norm not in row_party and row_party not in party_norm:
+    for row in resp.data:
+        rp = _normalize(str(row.get("party", "") or ""))
+        if not rp or (party_norm not in rp and rp not in party_norm):
             continue
         try:
-            qty = int(str(row[5]).replace("-", "").strip() or 0)   # col F = Qty Change
+            qty = abs(int(row.get("qty_change", 0) or 0))
         except ValueError:
             qty = 0
         entry = {
-            "timestamp": row[1],   # col B
-            "type":      row[2],   # col C
-            "brand":     row[3],   # col D
-            "spec":      row[4],   # col E
+            "timestamp": str(row.get("timestamp", ""))[:19],
+            "type":      row.get("type_", ""),
+            "brand":     str(row.get("brand", "")),
+            "spec":      str(row.get("spec",  "")),
             "qty":       qty,
-            "vehicle":   row[8],   # col I
+            "vehicle":   str(row.get("vehicle_no", "") or ""),
         }
-        if row[2] == "ADD_IN":
+        if row.get("type_") == "ADD_IN":
             purchases.append(entry)
-        elif row[2] == "SHIP_OUT":
+        elif row.get("type_") == "SHIP_OUT":
             sales.append(entry)
 
     if not purchases and not sales:
         return {"found": False, "party": party_name}
 
-    # Product-wise summary
-    def summarize(txns):
+    def _summarize(txns):
         totals = {}
         for t in txns:
-            key = f"{t['brand']} {t['spec']}"
+            key = f"{t['brand']} {t['spec']}".strip()
             totals[key] = totals.get(key, 0) + t["qty"]
         return totals
 
     return {
-        "found":     True,
-        "party":     party_name,
-        "purchases": purchases,
-        "sales":     sales,
-        "buy_totals":  summarize(purchases),
-        "sell_totals": summarize(sales),
+        "found":      True,
+        "party":      party_name,
+        "purchases":  purchases,
+        "sales":      sales,
+        "buy_totals":  _summarize(purchases),
+        "sell_totals": _summarize(sales),
     }
 
 
-def _log_transaction(type_, brand, spec, qty_change, before, after, vehicle_no, operator, party=""):
-    """Silently log to TRANSACTIONS sheet. Never crashes main flow."""
+def _log_transaction(type_, brand, spec, qty_change, before, after,
+                     vehicle_no, operator, party=""):
+    """Silently log to transactions table. Never crashes main flow."""
     try:
-        ws = _get_or_create_transactions_sheet()
-        from datetime import timezone, timedelta
-        IST = timezone(timedelta(hours=5, minutes=30))
-        # Col A = product_id (blank for now), then transaction data from col B onwards
-        ws.append_row([
-            "",   # product_id — blank; to be matched separately
-            datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST"),
-            type_, brand, spec,
-            qty_change, before, after,
-            vehicle_no, operator, party
-        ])
+        _get_client().table("transactions").insert({
+            "timestamp":    datetime.now(IST).isoformat(),
+            "type_":        type_,
+            "brand":        brand,
+            "spec":         spec,
+            "qty_change":   qty_change,
+            "stock_before": before,
+            "stock_after":  after,
+            "vehicle_no":   vehicle_no,
+            "operator":     operator,
+            "party":        party,
+        }).execute()
     except Exception as e:
         logger.warning(f"Transaction log failed (non-critical): {e}")
