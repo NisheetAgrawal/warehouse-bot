@@ -374,6 +374,46 @@ export default function Home() {
             />
           ))}
         </div>
+
+        {/* Naya Product — full-width 5th action */}
+        <button
+          onClick={() => navigate("/add-product")}
+          className="w-full mt-3 flex items-center gap-4 px-5 py-4 rounded-2xl transition-transform active:scale-95"
+          style={{
+            backgroundColor: "rgba(14,165,233,0.12)",
+            border: "1px solid rgba(14,165,233,0.25)",
+            cursor: "pointer",
+            backgroundImage: "radial-gradient(circle at right, rgba(14,165,233,0.08), transparent 60%)",
+          }}
+        >
+          <span
+            className="flex items-center justify-center rounded-xl"
+            style={{ width: 40, height: 40, background: "rgba(14,165,233,0.2)", flexShrink: 0 }}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+                 stroke="#0EA5E9" strokeWidth="2.2"
+                 strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+          </span>
+          <div className="text-left">
+            <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#fff",
+                        fontFamily: "'DM Sans', sans-serif" }}>
+              Naya Product
+            </p>
+            <p style={{ margin: 0, fontSize: 10, color: "rgba(255,255,255,0.4)",
+                        fontFamily: "'DM Sans', sans-serif" }}>
+              AI se product add karo
+            </p>
+          </div>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+               stroke="rgba(255,255,255,0.25)" strokeWidth="2"
+               strokeLinecap="round" strokeLinejoin="round"
+               style={{ marginLeft: "auto" }}>
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
+        </button>
       </div>
 
       {/* ── Low / out stock section ── */}
