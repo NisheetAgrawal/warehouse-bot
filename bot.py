@@ -881,11 +881,99 @@ async def error_handler(update, context):
         )
 
 
+# ── Supabase → Google Sheets background sync ─────────────────────
+_SYNC_INTERVAL = 300   # seconds (5 minutes)
+
+def _sync_supabase_to_sheets():
+    """
+    Runs forever in a daemon thread.
+    Every 5 minutes: read all products from Supabase, then batch-update
+    Quantity (col E) and Stock Status (col H) in the Google Sheet by
+    matching product_id in column A.
+    """
+    import gspread
+    import json
+    from google.oauth2.service_account import Credentials
+    from supabase import create_client
+
+    SCOPES = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+
+    def _gs_client():
+        from config import GOOGLE_CREDENTIALS
+        creds = Credentials.from_service_account_info(GOOGLE_CREDENTIALS, scopes=SCOPES)
+        return gspread.authorize(creds)
+
+    def _sb_client():
+        from config import SUPABASE_URL, SUPABASE_KEY
+        return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+    def _do_sync():
+        try:
+            # 1. Fetch all products from Supabase
+            sb   = _sb_client()
+            resp = sb.table("products").select("product_id,quantity,status").execute()
+            sb_data = {
+                row["product_id"]: (row["quantity"], row["status"])
+                for row in resp.data
+                if row.get("product_id")
+            }
+            if not sb_data:
+                logger.warning("Sync: no products returned from Supabase — skipping.")
+                return
+
+            # 2. Read column A (product_id) from the Stock sheet
+            from config import GOOGLE_SHEET_ID
+            gc  = _gs_client()
+            spr = gc.open_by_key(GOOGLE_SHEET_ID)
+            ws  = spr.worksheet("Stock")
+
+            # get_all_values is one API call — column A gives us product_ids with row indices
+            all_rows = ws.get_all_values()
+
+            # 3. Build batch update: E=qty (col 5), H=status (col 8)
+            updates = []
+            matched = 0
+            for i, row in enumerate(all_rows):
+                pid = str(row[0]).strip() if row else ""
+                if not pid or pid == "product_id":
+                    continue
+                if pid not in sb_data:
+                    continue
+                sheet_row  = i + 1   # 1-based
+                new_qty, new_status = sb_data[pid]
+                updates.append({"range": f"E{sheet_row}", "values": [[new_qty]]})
+                updates.append({"range": f"H{sheet_row}", "values": [[new_status]]})
+                matched += 1
+
+            if not updates:
+                logger.info("Sync: no matching product_ids found in sheet.")
+                return
+
+            # 4. One batch_update call — minimal API quota usage
+            ws.batch_update(updates)
+            logger.info(f"Sync: updated {matched} products in Google Sheet ✅")
+
+        except Exception as e:
+            logger.warning(f"Sync error (non-critical): {e}")
+
+    # Run immediately on start, then every _SYNC_INTERVAL seconds
+    logger.info("Background sync thread started (Supabase → Google Sheet every 5 min).")
+    while True:
+        _do_sync()
+        time.sleep(_SYNC_INTERVAL)
+
+
 # ── Entry point ──────────────────────────────────────────────────
 def main():
     import asyncio
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+
+    # Start background sync: Supabase → Google Sheet every 5 minutes
+    threading.Thread(target=_sync_supabase_to_sheets, daemon=True, name="supabase-sync").start()
 
     # WEBHOOK_URL must be set in Render env vars, e.g. https://warehouse-bot-3vw0.onrender.com
     webhook_url = os.environ.get("WEBHOOK_URL", "").rstrip("/")
