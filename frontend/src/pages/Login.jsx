@@ -64,6 +64,7 @@ export default function Login() {
   function handleSubmit(e) {
     e.preventDefault()
     if (password === PASSWORD) {
+      localStorage.setItem("auth", "true")
       navigate("/home")
     } else {
       setError(true)
