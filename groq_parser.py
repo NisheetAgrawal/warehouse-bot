@@ -129,6 +129,70 @@ def _extract_party(text: str, brand: str) -> str:
     return ""
 
 
+def _tok(text: str) -> set:
+    """Normalize text to a set of tokens — removes spaces, dashes, punctuation."""
+    text = text.lower()
+    text = re.sub(r'[-_./]', ' ', text)   # dashes → spaces
+    tokens = re.findall(r'[a-z0-9]+', text)
+    return set(tokens)
+
+# Aliases: what the user might write → catalog brand name tokens
+_BRAND_ALIASES = {
+    "gpleg":    "gp leg",
+    "gp leg":   "gp leg",
+    "nutbolt":  "nut bolt",
+    "nut bolt": "nut bolt",
+    "12x40 nut bolt": "12x40 nut bolt",
+    "pvc pipe": "25mm upvc",
+    "upvc":     "25mm upvc",
+    "pvc":      "25mm upvc",
+    "ac cable": "ac 4sx2c",
+    "4sx2c":    "ac 4sx2c",
+    "dc cable": "dc",
+    "earthing cable": "earthing",
+}
+
+def _best_catalog_match(line_low: str, catalog: list):
+    """
+    Find the best catalog product for a line of text.
+    Uses token overlap + spec matching to distinguish e.g. AC vs DC cable.
+    Returns catalog dict or None.
+    """
+    line_tok = _tok(line_low)
+
+    # Apply aliases first (handles "GPLEG" → "GP LEG" etc.)
+    for alias, replacement in _BRAND_ALIASES.items():
+        if _tok(alias) <= line_tok:   # alias tokens are subset of line tokens
+            line_tok |= _tok(replacement)
+
+    best_score = 0
+    best_p     = None
+
+    for p in catalog:
+        # Build token set from brand + spec combined
+        catalog_tok = _tok(p["brand"]) | _tok(p.get("spec", "")) | _tok(p.get("type_", ""))
+
+        # Score = number of catalog tokens found in the line
+        matches = catalog_tok & line_tok
+        if not matches:
+            continue
+
+        # Require at least the main brand tokens to match
+        brand_tok = _tok(p["brand"])
+        brand_matches = brand_tok & line_tok
+        if not brand_matches:
+            continue
+
+        # Score: brand matches weighted higher than spec matches
+        score = len(brand_matches) * 3 + len(matches - brand_tok)
+
+        if score > best_score:
+            best_score = score
+            best_p     = p
+
+    return best_p if best_score >= 3 else None   # minimum 1 full brand token match
+
+
 # ── Python-level fallback (uses live catalog for brand matching) ───────────────
 def _python_fallback(user_text: str):
     """
@@ -159,19 +223,10 @@ def _python_fallback(user_text: str):
     if not is_add and not is_check and not is_ship:
         return None
 
-    # Match against EVERY brand in the live catalog
-    catalog = get_live_catalog()
-    matched = None
-    matched_pid = ""
-    best_len = 0
-
-    for p in catalog:
-        brand_low = p["brand"].lower()
-        # Longer match = more specific = better
-        if brand_low in text_low and len(brand_low) > best_len:
-            matched     = p["brand"]
-            matched_pid = p["product_id"]
-            best_len    = len(brand_low)
+    catalog  = get_live_catalog()
+    best_p   = _best_catalog_match(text_low, catalog)
+    matched     = best_p["brand"]     if best_p else None
+    matched_pid = best_p["product_id"] if best_p else ""
 
     if not matched and not is_ship:
         return None
@@ -201,17 +256,15 @@ def _python_fallback(user_text: str):
                                flags=re.IGNORECASE).strip().title()
                 continue
 
-            # Match product from catalog
-            best_brand, best_pid, best_len = None, "", 0
-            for p in catalog:
-                b = p["brand"].lower()
-                if b in line_low and len(b) > best_len:
-                    best_brand, best_pid, best_len = p["brand"], p["product_id"], len(b)
-
-            if best_brand:
+            # Match product from catalog using normalized token overlap
+            matched_p = _best_catalog_match(line_low, catalog)
+            if matched_p:
                 qty = _extract_qty(line_low)
-                items.append({"brand": best_brand, "spec": "", "type": "",
-                              "quantity": qty, "product_id": best_pid})
+                items.append({"brand": matched_p["brand"],
+                              "spec":  matched_p.get("spec",""),
+                              "type":  matched_p.get("type_",""),
+                              "quantity": qty,
+                              "product_id": matched_p["product_id"]})
 
         if not items:
             return None
