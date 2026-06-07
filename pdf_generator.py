@@ -142,7 +142,23 @@ def generate_delivery_receipt(vehicle_no: str, operator: str, items: list, party
 
     items_table.setStyle(TableStyle(row_styles))
     story.append(items_table)
-    story.append(Spacer(1, 12*mm))
+    story.append(Spacer(1, 8*mm))
+
+    # ── Disclaimer (Fix 5) ────────────────────────────────────────
+    disclaimer_style = ParagraphStyle(
+        "disclaimer",
+        fontSize=8,
+        textColor=colors.HexColor("#888888"),
+        fontName="Helvetica-Oblique",
+        alignment=TA_CENTER,
+        leading=12,
+    )
+    story.append(Paragraph(
+        "Agar is challan mein koi galti ho ya quantity mein koi issue ho toh "
+        "delivery challan generation date se 2 din ke andar sampark karein.",
+        disclaimer_style
+    ))
+    story.append(Spacer(1, 6*mm))
 
     # ── Signatures ───────────────────────────────────────────────
     sig_lbl = ParagraphStyle("sl", fontSize=9, textColor=colors.gray, fontName="Helvetica", alignment=TA_CENTER)

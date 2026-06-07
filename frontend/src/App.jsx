@@ -6,6 +6,7 @@ import StockIn    from "./pages/StockIn"
 import StockCheck from "./pages/StockCheck"
 import History    from "./pages/History"
 import AddProduct from "./pages/AddProduct"
+import Challans   from "./pages/Challans"
 
 function ProtectedRoute({ children }) {
   return localStorage.getItem("auth")
@@ -29,6 +30,7 @@ function App() {
         <Route path="/stock-check" element={<P><StockCheck /></P>} />
         <Route path="/history"     element={<P><History /></P>} />
         <Route path="/add-product" element={<P><AddProduct /></P>} />
+        <Route path="/challans"    element={<P><Challans /></P>} />
       </Routes>
     </BrowserRouter>
   )

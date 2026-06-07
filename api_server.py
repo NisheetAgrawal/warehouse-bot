@@ -545,6 +545,149 @@ def challan_pdf(payload: ChallanPayload):
     )
 
 
+# ── GET /api/challans ─────────────────────────────────────────────
+@app.get("/api/challans")
+def get_challans():
+    """
+    Last 7 days SHIP_OUT transactions grouped by vehicle_no + date.
+    Returns list of unique challans with their items.
+    """
+    since = (datetime.now(IST) - timedelta(days=7)).isoformat()
+    resp  = _sb().table("transactions").select("*") \
+                 .eq("type_", "SHIP_OUT") \
+                 .gte("timestamp", since) \
+                 .order("timestamp", desc=True) \
+                 .execute()
+
+    challans: dict = {}
+    for row in resp.data:
+        ts      = row.get("timestamp", "") or ""
+        date    = ts[:10]  # YYYY-MM-DD
+        vehicle = (row.get("vehicle_no") or "UNKNOWN").strip()
+        key     = f"{vehicle}_{date}"
+
+        if key not in challans:
+            challans[key] = {
+                "key":       key,
+                "vehicle_no": vehicle,
+                "date":      date,
+                "party":     row.get("party")    or "",
+                "operator":  row.get("operator") or "",
+                "items":     [],
+            }
+
+        challans[key]["items"].append({
+            "brand":     row.get("brand", ""),
+            "spec":      row.get("spec",  "") or "",
+            "quantity":  abs(int(row.get("qty_change", 0) or 0)),
+            "timestamp": ts,
+        })
+
+    return sorted(challans.values(), key=lambda c: c["date"], reverse=True)
+
+
+# ── POST /api/stock/edit ──────────────────────────────────────────
+class StockEditItem(BaseModel):
+    product_id: str
+    brand:      str
+    spec:       Optional[str] = ""
+    type_:      Optional[str] = ""
+    quantity:   int
+    unit:       Optional[str] = "nos"
+
+class StockEditPayload(BaseModel):
+    vehicle_no:     str
+    party:          Optional[str] = ""
+    operator:       Optional[str] = "Frontend"
+    original_items: List[StockEditItem]
+    new_items:      List[StockEditItem]
+
+@app.post("/api/stock/edit")
+def stock_edit(payload: StockEditPayload):
+    """
+    Reconcile stock from an edited challan — applies DIFF only.
+    - qty increased (e.g. 10→15): deduct 5 more
+    - qty decreased (e.g. 10→8):  add back 2
+    - item removed:                add back all
+    - new item added:              deduct all
+    Logs CHALLAN_EDIT transaction per changed item.
+    """
+    sb = _sb()
+
+    orig_map = {i.product_id: i for i in payload.original_items}
+    new_map  = {i.product_id: i for i in payload.new_items}
+    all_pids = set(orig_map.keys()) | set(new_map.keys())
+
+    results = []
+    errors  = []
+
+    for pid in all_pids:
+        orig_qty = orig_map[pid].quantity if pid in orig_map else 0
+        new_qty  = new_map[pid].quantity  if pid in new_map  else 0
+        diff     = new_qty - orig_qty   # +ve = deduct more, -ve = add back
+
+        if diff == 0:
+            continue
+
+        item = new_map.get(pid) or orig_map.get(pid)
+
+        try:
+            resp = sb.table("products").select("id,quantity,rate") \
+                     .eq("product_id", pid).single().execute()
+            if not resp.data:
+                errors.append(f"{item.brand} {item.spec}: product not found")
+                continue
+
+            product       = resp.data
+            current_stock = int(product.get("quantity") or 0)
+
+            if diff > 0 and current_stock < diff:
+                errors.append(
+                    f"{item.brand} {item.spec}: sirf {current_stock} hai, "
+                    f"{diff} aur chahiye"
+                )
+                continue
+
+            new_stock = current_stock - diff   # negative diff = add back = increase stock
+            rate      = float(product.get("rate") or 0)
+            total     = int(new_stock * rate) if rate > 0 else 0
+
+            sb.table("products").update({
+                "quantity": new_stock,
+                "status":   _status(new_stock),
+                "total":    total,
+            }).eq("product_id", pid).execute()
+
+            spec_full = f"{item.spec or ''} {item.type_ or ''}".strip()
+            sb.table("transactions").insert({
+                "timestamp":    datetime.now(IST).isoformat(),
+                "type_":        "CHALLAN_EDIT",
+                "brand":        item.brand,
+                "spec":         spec_full,
+                "qty_change":   -diff,    # negative = stock went up (add-back)
+                "stock_before": current_stock,
+                "stock_after":  new_stock,
+                "vehicle_no":   payload.vehicle_no,
+                "operator":     payload.operator,
+                "party":        payload.party,
+            }).execute()
+
+            results.append({
+                "product_id": pid,
+                "brand":      item.brand,
+                "spec":       item.spec,
+                "diff":       diff,
+                "before":     current_stock,
+                "after":      new_stock,
+            })
+
+        except Exception as e:
+            errors.append(f"{item.brand} {item.spec}: {str(e)}")
+
+    return {"success": len(results) > 0 or len(errors) == 0,
+            "results": results, "errors": errors}
+
+
 # ── GET /health ───────────────────────────────────────────────────
 @app.get("/health")
 def health():

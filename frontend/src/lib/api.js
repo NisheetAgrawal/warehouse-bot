@@ -7,7 +7,8 @@ async function request(path) {
 }
 
 export const api = {
-  products: ()      => request("/api/products"),
-  stats:    ()      => request("/api/products/stats"),
-  transactions: ()  => request("/api/transactions"),
+  products:     () => request("/api/products"),
+  stats:        () => request("/api/products/stats"),
+  transactions: () => request("/api/transactions"),
+  challans:     () => request("/api/challans"),
 }

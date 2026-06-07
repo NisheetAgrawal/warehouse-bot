@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useProducts } from "../hooks/useProducts"
 import ProductSearch from "../components/ProductSearch"
+import QtyControl from "../components/QtyControl"
 import BottomNav from "../components/BottomNav"
 
 const BASE = import.meta.env.VITE_API_URL || "http://localhost:8000"
@@ -42,6 +43,14 @@ export default function StockIn() {
       prev
         .map((i) => i.product.product_id === productId ? { ...i, qty: i.qty + delta } : i)
         .filter((i) => i.qty > 0)
+    )
+  }
+
+  function setQtyDirect(productId, newQty) {
+    setItems((prev) =>
+      prev.map((i) =>
+        i.product.product_id === productId ? { ...i, qty: Math.max(1, newQty) } : i
+      )
     )
   }
 
@@ -301,31 +310,13 @@ export default function StockIn() {
                     Stock mein abhi: {product.quantity ?? 0}
                   </p>
                 </div>
-                {/* Qty controls */}
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-                  <button
-                    onClick={() => changeQty(product.product_id, -1)}
-                    style={{
-                      width: 32, height: 32, borderRadius: 10,
-                      background: "rgba(255,255,255,0.1)", border: "none",
-                      cursor: "pointer", color: "rgba(255,255,255,0.7)", fontSize: 18,
-                    }}
-                  >−</button>
-                  <span style={{
-                    minWidth: 28, textAlign: "center", fontSize: 15,
-                    fontWeight: 600, color: "#fff", fontFamily: "'DM Mono', monospace",
-                  }}>
-                    {qty}
-                  </span>
-                  <button
-                    onClick={() => changeQty(product.product_id, 1)}
-                    style={{
-                      width: 32, height: 32, borderRadius: 10,
-                      background: "#E8500A", border: "none",
-                      cursor: "pointer", color: "#fff", fontSize: 18,
-                    }}
-                  >+</button>
-                </div>
+                {/* Fix 2: tappable QtyControl */}
+                <QtyControl
+                  qty={qty}
+                  productId={product.product_id}
+                  onDelta={changeQty}
+                  onDirectSet={setQtyDirect}
+                />
               </div>
             ))}
           </div>

@@ -452,9 +452,13 @@ function Step3({ fields, isNewCategory, isNewBrand }) {
   const [status, setStatus]   = useState("saving") // saving | success | error
   const [result, setResult]   = useState(null)
   const [errors, setErrors]   = useState([])
+  // Fix 1: guard against React 18 StrictMode double-invocation of useEffect
+  const hasSaved = useRef(false)
 
   useEffect(() => {
-    (async () => {
+    if (hasSaved.current) return
+    hasSaved.current = true
+    ;(async () => {
       const errs = []
 
       // 1. Create category if new

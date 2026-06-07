@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { api } from "../lib/api"
+import QtyControl from "../components/QtyControl"
 
 const BASE = import.meta.env.VITE_API_URL || "http://localhost:8000"
 
@@ -104,108 +105,7 @@ function InputField({ label, value, onChange, placeholder, mono, autoUppercase }
   )
 }
 
-// ── Fix 1: Tappable inline qty editor ────────────────────────────
-// The number in the middle is tappable. It transforms into a small
-// inline input (DM Mono, orange bottom border, 48px, centered).
-// Blur or Enter commits. Minimum value 1.
-function QtyControl({ qty, productId, onDelta, onDirectSet }) {
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft]     = useState(String(qty))
-  const inputRef              = useRef(null)
-
-  // Sync draft when qty changes from outside (e.g. + button)
-  useEffect(() => {
-    if (!editing) setDraft(String(qty))
-  }, [qty, editing])
-
-  useEffect(() => {
-    if (editing && inputRef.current) {
-      inputRef.current.focus()
-      inputRef.current.select()
-    }
-  }, [editing])
-
-  function commit() {
-    const n = parseInt(draft, 10)
-    if (!isNaN(n) && n >= 1) {
-      onDirectSet(productId, n)
-    } else {
-      setDraft(String(qty))   // revert if invalid
-    }
-    setEditing(false)
-  }
-
-  return (
-    <div className="flex items-center gap-2 flex-shrink-0">
-      {/* Minus — design unchanged */}
-      <button
-        onClick={() => onDelta(productId, -1)}
-        className="w-8 h-8 rounded-xl flex items-center justify-center transition-opacity active:opacity-60"
-        style={{ background: "rgba(255,255,255,0.1)", border: "none",
-                 cursor: "pointer", color: "rgba(255,255,255,0.7)", fontSize: 18 }}
-      >
-        −
-      </button>
-
-      {/* Qty — tappable number OR inline input */}
-      {editing ? (
-        <input
-          ref={inputRef}
-          type="number"
-          min="1"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); commit() } }}
-          style={{
-            width: 48,
-            textAlign: "center",
-            fontFamily: "'DM Mono', monospace",
-            fontSize: 15,
-            fontWeight: 600,
-            color: "#fff",
-            background: "transparent",
-            border: "none",
-            borderBottom: "2px solid #E8500A",
-            outline: "none",
-            padding: "2px 0",
-            MozAppearance: "textfield",
-          }}
-        />
-      ) : (
-        <span
-          onClick={() => { setDraft(String(qty)); setEditing(true) }}
-          style={{
-            minWidth: 28,
-            textAlign: "center",
-            fontSize: 15,
-            fontWeight: 600,
-            color: "#fff",
-            fontFamily: "'DM Mono', monospace",
-            cursor: "pointer",
-            padding: "2px 4px",
-            borderRadius: 4,
-            transition: "background 0.15s",
-          }}
-          title="Tap to edit quantity"
-        >
-          {qty}
-        </span>
-      )}
-
-      {/* Plus — design unchanged */}
-      <button
-        onClick={() => onDelta(productId, 1)}
-        className="w-8 h-8 rounded-xl flex items-center justify-center transition-opacity active:opacity-60"
-        style={{ background: "#E8500A", border: "none", cursor: "pointer",
-                 color: "#fff", fontSize: 18 }}
-      >
-        +
-      </button>
-    </div>
-  )
-}
-
+// QtyControl is now a shared component — imported from components/QtyControl.jsx
 
 // ── STEP 1 — Vehicle + Party ──────────────────────────────────────
 // Fix 2: accepts initialVehicleNo & initialParty so going back preserves values
@@ -516,43 +416,88 @@ function Step2({ vehicleNo, party, onNext, onBack, initialItems = [] }) {
 
 
 // ── STEP 3 — Confirm + submit ─────────────────────────────────────
-function Step3({ vehicleNo, party, items, onBack, onEdit, onNewChallan }) {
+// Fix 4: receives originalItems when this is an edit re-confirm.
+//   If originalItems is set → use /api/stock/edit (diff only).
+//   If originalItems is null → fresh challan → use /api/stock/out.
+function Step3({ vehicleNo, party, items, onBack, onEdit, onNewChallan, originalItems = null }) {
   const [loading, setLoading] = useState(false)
   const [errors, setErrors]   = useState([])
   const [success, setSuccess] = useState(false)
   const [pdfUrl, setPdfUrl]   = useState(null)
 
-  const totalQty = items.reduce((sum, { qty }) => sum + qty, 0)
+  const isEditMode = originalItems !== null
+  const totalQty   = items.reduce((sum, { qty }) => sum + qty, 0)
 
   async function handleConfirm() {
     setLoading(true)
     setErrors([])
     try {
-      const stockRes = await fetch(`${BASE}/api/stock/out`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          vehicle_no: vehicleNo,
-          party,
-          operator: "Frontend",
-          items: items.map(({ product, qty }) => ({
-            product_id: product.product_id,
-            brand:      product.brand,
-            spec:       product.spec  || "",
-            type_:      product.type_ || "",
-            quantity:   qty,
-            unit:       product.unit  || "nos",
-          })),
-        }),
-      })
-      const stockData = await stockRes.json()
-      if (!stockRes.ok) {
-        setErrors([stockData.detail || "Stock update fail hua"])
-        setLoading(false)
-        return
-      }
-      const apiErrors = stockData.errors || []
+      let apiErrors = []
 
+      if (isEditMode) {
+        // ── Edit mode: send original + new to /api/stock/edit ────
+        const editRes = await fetch(`${BASE}/api/stock/edit`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            vehicle_no:     vehicleNo,
+            party,
+            operator:       "Swayam",
+            original_items: originalItems.map(({ product, qty }) => ({
+              product_id: product.product_id,
+              brand:      product.brand,
+              spec:       product.spec  || "",
+              type_:      product.type_ || "",
+              quantity:   qty,
+              unit:       product.unit  || "nos",
+            })),
+            new_items: items.map(({ product, qty }) => ({
+              product_id: product.product_id,
+              brand:      product.brand,
+              spec:       product.spec  || "",
+              type_:      product.type_ || "",
+              quantity:   qty,
+              unit:       product.unit  || "nos",
+            })),
+          }),
+        })
+        const editData = await editRes.json()
+        if (!editRes.ok) {
+          setErrors([editData.detail || "Edit fail hua"])
+          setLoading(false)
+          return
+        }
+        apiErrors = editData.errors || []
+
+      } else {
+        // ── Fresh challan: deduct everything ─────────────────────
+        const stockRes = await fetch(`${BASE}/api/stock/out`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            vehicle_no: vehicleNo,
+            party,
+            operator: "Swayam",
+            items: items.map(({ product, qty }) => ({
+              product_id: product.product_id,
+              brand:      product.brand,
+              spec:       product.spec  || "",
+              type_:      product.type_ || "",
+              quantity:   qty,
+              unit:       product.unit  || "nos",
+            })),
+          }),
+        })
+        const stockData = await stockRes.json()
+        if (!stockRes.ok) {
+          setErrors([stockData.detail || "Stock update fail hua"])
+          setLoading(false)
+          return
+        }
+        apiErrors = stockData.errors || []
+      }
+
+      // ── Generate PDF (same for both fresh and edit) ───────────
       const pdfRes = await fetch(`${BASE}/api/challan/pdf`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -575,7 +520,7 @@ function Step3({ vehicleNo, party, items, onBack, onEdit, onNewChallan }) {
         setPdfUrl(url)
         window.open(url, "_blank")
       } else {
-        apiErrors.push("PDF generate nahi hua — stock deduct ho gaya")
+        apiErrors.push("PDF generate nahi hua — stock update ho gaya")
       }
 
       if (apiErrors.length > 0) setErrors(apiErrors)
@@ -641,8 +586,8 @@ function Step3({ vehicleNo, party, items, onBack, onEdit, onNewChallan }) {
               📄 PDF dobara dekho
             </GhostBtn>
           )}
-          {/* Fix 3: Edit Karo → goes back to Step 2 with same vehicle, party, items */}
-          <GhostBtn onClick={onEdit}>
+          {/* Fix 4: Edit Karo passes current items as originalItems for diff calculation */}
+          <GhostBtn onClick={() => onEdit(items)}>
             ✏️ Edit Karo
           </GhostBtn>
           {/* Naya Challan → full reset */}
@@ -757,22 +702,25 @@ function Step3({ vehicleNo, party, items, onBack, onEdit, onNewChallan }) {
 export default function Challan() {
   const navigate = useNavigate()
 
-  // Fix 2 & 3: all shared state lives here so back-nav preserves everything
-  const [step,      setStep]      = useState(1)
-  const [vehicleNo, setVehicleNo] = useState("")
-  const [party,     setParty]     = useState("")
-  const [items,     setItems]     = useState([])
+  const [step,          setStep]          = useState(1)
+  const [vehicleNo,     setVehicleNo]     = useState("")
+  const [party,         setParty]         = useState("")
+  const [items,         setItems]         = useState([])
+  // Fix 4: store confirmed items so Edit Karo can compute diffs
+  const [originalItems, setOriginalItems] = useState(null)
 
   useEffect(() => {
     if (!localStorage.getItem("auth")) navigate("/login", { replace: true })
   }, [navigate])
 
-  // Fix 3: Naya Challan = full reset
   function handleNewChallan() {
-    setStep(1)
-    setVehicleNo("")
-    setParty("")
-    setItems([])
+    setStep(1); setVehicleNo(""); setParty(""); setItems([]); setOriginalItems(null)
+  }
+
+  // Fix 4: when Edit Karo is clicked, save current confirmed quantities as originals
+  function handleEdit(confirmedItems) {
+    setOriginalItems(confirmedItems)
+    setStep(2)
   }
 
   return (
@@ -826,9 +774,10 @@ export default function Challan() {
           vehicleNo={vehicleNo}
           party={party}
           items={items}
+          originalItems={originalItems}         // Fix 4: null on first confirm, set on edit
           onBack={() => setStep(2)}
-          onEdit={() => setStep(2)}        // Fix 3: back to step 2, all state intact
-          onNewChallan={handleNewChallan}  // Fix 3: full reset
+          onEdit={handleEdit}                   // Fix 4: saves originals, goes to step 2
+          onNewChallan={handleNewChallan}
         />
       )}
     </div>
