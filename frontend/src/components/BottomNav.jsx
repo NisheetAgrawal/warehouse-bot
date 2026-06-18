@@ -15,7 +15,7 @@ const TABS = [
   {
     id: "stock",
     label: "Stock",
-    path: "/stock-check",
+    path: "/all-stock",
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <rect x="2" y="3" width="20" height="14" rx="2" />
@@ -26,7 +26,7 @@ const TABS = [
   {
     id: "challans",
     label: "Challans",
-    path: "/challan",
+    path: "/challans",
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />

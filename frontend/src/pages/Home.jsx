@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { api } from "../lib/api"
+import { getName } from "../lib/auth"
 import BottomNav from "../components/BottomNav"
 
 // ── Category emoji ───────────────────────────────────────────────
@@ -315,7 +316,7 @@ export default function Home() {
             lineHeight: 1.2,
           }}
         >
-          Namaste, Swayam ☀️
+          Namaste, {getName()} ☀️
         </h1>
         <p
           style={{

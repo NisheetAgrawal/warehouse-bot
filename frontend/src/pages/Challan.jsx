@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { api } from "../lib/api"
+import { getName } from "../lib/auth"
 import QtyControl from "../components/QtyControl"
 
 const BASE = import.meta.env.VITE_API_URL || "http://localhost:8000"
@@ -442,7 +443,7 @@ function Step3({ vehicleNo, party, items, onBack, onEdit, onNewChallan, original
           body: JSON.stringify({
             vehicle_no:     vehicleNo,
             party,
-            operator:       "Swayam",
+            operator:       getName(),
             original_items: originalItems.map(({ product, qty }) => ({
               product_id: product.product_id,
               brand:      product.brand,
@@ -477,7 +478,7 @@ function Step3({ vehicleNo, party, items, onBack, onEdit, onNewChallan, original
           body: JSON.stringify({
             vehicle_no: vehicleNo,
             party,
-            operator: "Swayam",
+            operator: getName(),
             items: items.map(({ product, qty }) => ({
               product_id: product.product_id,
               brand:      product.brand,
@@ -503,7 +504,7 @@ function Step3({ vehicleNo, party, items, onBack, onEdit, onNewChallan, original
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           vehicle_no: vehicleNo,
-          operator:   "Swayam",
+          operator:   getName(),
           party,
           items: items.map(({ product, qty }) => ({
             brand:    product.brand,

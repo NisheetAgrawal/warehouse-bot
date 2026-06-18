@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useProducts } from "../hooks/useProducts"
+import { getName } from "../lib/auth"
 import ProductSearch from "../components/ProductSearch"
 import QtyControl from "../components/QtyControl"
 import BottomNav from "../components/BottomNav"
@@ -64,7 +65,7 @@ export default function StockIn() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           party,
-          operator: "Swayam",
+          operator: getName(),
           items: items.map(({ product, qty }) => ({
             product_id: product.product_id,
             brand:      product.brand,

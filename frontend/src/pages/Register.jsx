@@ -1,20 +1,12 @@
 import { useState } from "react"
 import { useNavigate, Link } from "react-router-dom"
-import { login, setAuth } from "../lib/auth"
+import { register, setAuth } from "../lib/auth"
 
 function SunIcon() {
   return (
-    <svg
-      width="36"
-      height="36"
-      viewBox="0 0 36 36"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      aria-hidden="true"
-    >
-      {/* Center circle */}
+    <svg width="36" height="36" viewBox="0 0 36 36" fill="none"
+         xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <circle cx="18" cy="18" r="7" fill="white" />
-      {/* Rays */}
       {[0, 45, 90, 135, 180, 225, 270, 315].map((deg) => {
         const rad = (deg * Math.PI) / 180
         const x1 = 18 + Math.cos(rad) * 10
@@ -22,16 +14,8 @@ function SunIcon() {
         const x2 = 18 + Math.cos(rad) * 14
         const y2 = 18 + Math.sin(rad) * 14
         return (
-          <line
-            key={deg}
-            x1={x1}
-            y1={y1}
-            x2={x2}
-            y2={y2}
-            stroke="white"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-          />
+          <line key={deg} x1={x1} y1={y1} x2={x2} y2={y2}
+                stroke="white" strokeWidth="2.5" strokeLinecap="round" />
         )
       })}
     </svg>
@@ -53,26 +37,44 @@ function EyeIcon({ open }) {
   )
 }
 
-export default function Login() {
+const inputWrap = {
+  background: "rgba(255,255,255,0.05)",
+  border: "1px solid rgba(255,255,255,0.08)",
+}
+
+export default function Register() {
   const navigate = useNavigate()
-  const [username, setUsername]     = useState("")
-  const [password, setPassword]     = useState("")
-  const [visible, setVisible]       = useState(false)
-  const [error, setError]           = useState("")
-  const [shaking, setShaking]       = useState(false)
-  const [loading, setLoading]       = useState(false)
+  const [name, setName]         = useState("")
+  const [username, setUsername] = useState("")
+  const [password, setPassword] = useState("")
+  const [visible, setVisible]   = useState(false)
+  const [error, setError]       = useState("")
+  const [shaking, setShaking]   = useState(false)
+  const [loading, setLoading]   = useState(false)
+
+  function clearError() {
+    if (error) setError("")
+  }
 
   async function handleSubmit(e) {
     e.preventDefault()
     if (loading) return
+
+    if (password.length < 6) {
+      setError("Password kam se kam 6 characters ka hona chahiye")
+      setShaking(true)
+      setTimeout(() => setShaking(false), 600)
+      return
+    }
+
     setLoading(true)
     setError("")
     try {
-      const data = await login(username.trim(), password)
+      const data = await register(username.trim(), name.trim(), password)
       setAuth(data)
       navigate("/home")
     } catch (err) {
-      setError(err.message || "Login fail hua")
+      setError(err.message || "Register fail hua")
       setShaking(true)
       setTimeout(() => setShaking(false), 600)
     } finally {
@@ -80,52 +82,44 @@ export default function Login() {
     }
   }
 
-  function clearError() {
-    if (error) setError("")
-  }
-
   return (
     <div className="min-h-dvh w-full flex flex-col items-center justify-center px-6"
          style={{ backgroundColor: "#0A0A0F" }}>
 
       {/* ── Logo block ── */}
-      <div className="flex flex-col items-center gap-3 mb-16">
-        {/* Orange sun circle */}
-        <div
-          className="w-20 h-20 rounded-full flex items-center justify-center shadow-lg"
-          style={{ backgroundColor: "#E8500A" }}
-        >
+      <div className="flex flex-col items-center gap-3 mb-12">
+        <div className="w-20 h-20 rounded-full flex items-center justify-center shadow-lg"
+             style={{ backgroundColor: "#E8500A" }}>
           <SunIcon />
         </div>
-
-        {/* Company name */}
-        <p
-          className="text-white text-center"
-          style={{ fontFamily: "'DM Sans', sans-serif", fontSize: "24px", fontWeight: 600, letterSpacing: "-0.3px", margin: 0 }}
-        >
-          Swadev Energies
+        <p className="text-white text-center"
+           style={{ fontFamily: "'DM Sans', sans-serif", fontSize: "24px", fontWeight: 600, letterSpacing: "-0.3px", margin: 0 }}>
+          Naya Account
         </p>
-
-        {/* Subtitle */}
-        <p
-          className="text-center"
-          style={{ fontSize: "12px", color: "rgba(255,255,255,0.35)", margin: 0 }}
-        >
-          Warehouse Management
+        <p className="text-center" style={{ fontSize: "12px", color: "rgba(255,255,255,0.35)", margin: 0 }}>
+          Swadev Energies Warehouse
         </p>
       </div>
 
       {/* ── Form ── */}
       <form onSubmit={handleSubmit} className="w-full max-w-sm flex flex-col gap-3">
 
-        {/* Username input */}
-        <div
-          className="flex items-center rounded-2xl px-4 py-0 gap-2"
-          style={{
-            background: "rgba(255,255,255,0.05)",
-            border: "1px solid rgba(255,255,255,0.08)",
-          }}
-        >
+        {/* Name */}
+        <div className="flex items-center rounded-2xl px-4 py-0 gap-2" style={inputWrap}>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => { setName(e.target.value); clearError() }}
+            placeholder="Pura naam"
+            autoComplete="name"
+            required
+            className="flex-1 bg-transparent outline-none text-white py-4 text-sm placeholder:text-white/30"
+            style={{ fontFamily: "'DM Sans', sans-serif" }}
+          />
+        </div>
+
+        {/* Username */}
+        <div className="flex items-center rounded-2xl px-4 py-0 gap-2" style={inputWrap}>
           <input
             type="text"
             value={username}
@@ -133,25 +127,21 @@ export default function Login() {
             placeholder="Username"
             autoComplete="username"
             autoCapitalize="none"
+            required
             className="flex-1 bg-transparent outline-none text-white py-4 text-sm placeholder:text-white/30"
             style={{ fontFamily: "'DM Sans', sans-serif" }}
           />
         </div>
 
-        {/* Password input */}
-        <div
-          className="flex items-center rounded-2xl px-4 py-0 gap-2"
-          style={{
-            background: "rgba(255,255,255,0.05)",
-            border: "1px solid rgba(255,255,255,0.08)",
-          }}
-        >
+        {/* Password */}
+        <div className="flex items-center rounded-2xl px-4 py-0 gap-2" style={inputWrap}>
           <input
             type={visible ? "text" : "password"}
             value={password}
             onChange={(e) => { setPassword(e.target.value); clearError() }}
-            placeholder="Password"
-            autoComplete="current-password"
+            placeholder="Password (kam se kam 6 characters)"
+            autoComplete="new-password"
+            required
             className="flex-1 bg-transparent outline-none text-white py-4 text-sm placeholder:text-white/30"
             style={{ fontFamily: "'DM Sans', sans-serif" }}
           />
@@ -166,19 +156,12 @@ export default function Login() {
         </div>
 
         {/* Error text */}
-        <p
-          className="text-center text-sm transition-all duration-200"
-          style={{
-            color: "#FF5A5A",
-            minHeight: "20px",
-            opacity: error ? 1 : 0,
-            fontFamily: "'DM Sans', sans-serif",
-          }}
-        >
+        <p className="text-center text-sm transition-all duration-200"
+           style={{ color: "#FF5A5A", minHeight: "20px", opacity: error ? 1 : 0, fontFamily: "'DM Sans', sans-serif" }}>
           {error || ""}
         </p>
 
-        {/* Login button */}
+        {/* Register button */}
         <button
           type="submit"
           disabled={loading}
@@ -194,22 +177,19 @@ export default function Login() {
             animation: shaking ? "shake 0.6s ease" : "none",
           }}
         >
-          {loading ? "Login ho raha hai..." : "Login karo"}
+          {loading ? "Account ban raha hai..." : "Register karo"}
         </button>
 
-        {/* Register link */}
-        <p
-          className="text-center text-sm"
-          style={{ color: "rgba(255,255,255,0.4)", fontFamily: "'DM Sans', sans-serif", marginTop: 4 }}
-        >
-          Account nahi hai?{" "}
-          <Link to="/register" style={{ color: "#E8500A", fontWeight: 600 }}>
-            Register karo
+        {/* Login link */}
+        <p className="text-center text-sm"
+           style={{ color: "rgba(255,255,255,0.4)", fontFamily: "'DM Sans', sans-serif", marginTop: 4 }}>
+          Pehle se account hai?{" "}
+          <Link to="/login" style={{ color: "#E8500A", fontWeight: 600 }}>
+            Login karo
           </Link>
         </p>
       </form>
 
-      {/* ── Shake keyframes ── */}
       <style>{`
         @keyframes shake {
           0%   { transform: translateX(0); }

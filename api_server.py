@@ -28,6 +28,14 @@ INSERT INTO brands (name, code) VALUES
   ('Deye','DEY'),('Microtek','MTK'),('Eastman','EST'),('Havells','HVL'),
   ('Easyone','EAS'),('Waacab','WCB')
 ON CONFLICT (name) DO NOTHING;
+-- User accounts for the PWA login (bcrypt-hashed passwords)
+CREATE TABLE IF NOT EXISTS users (
+  id            SERIAL PRIMARY KEY,
+  username      TEXT UNIQUE NOT NULL,
+  name          TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  created_at    TIMESTAMPTZ DEFAULT NOW()
+);
 ──────────────────────────────────────────────────────────────────
 """
 
@@ -38,7 +46,9 @@ load_dotenv()
 sys.path.insert(0, os.path.dirname(__file__))
 
 from datetime import datetime, timezone, timedelta
-from fastapi import FastAPI, HTTPException
+import bcrypt
+import jwt
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -46,6 +56,11 @@ from typing import List, Optional
 from supabase import create_client
 
 app = FastAPI(title="Swadev Warehouse API")
+
+# ── Auth config ───────────────────────────────────────────────────
+JWT_SECRET  = os.environ.get("JWT_SECRET", "swadev-dev-secret-change-me-in-production-please")
+JWT_ALGO    = "HS256"
+JWT_EXP_DAYS = 30
 
 app.add_middleware(
     CORSMiddleware,
@@ -65,6 +80,90 @@ def _status(qty: int) -> str:
     if qty == 0:  return "No Stock"
     if qty < 5:   return "Low Stock"
     return "In Stock"
+
+
+def _make_token(user: dict) -> str:
+    payload = {
+        "sub":  user["username"],
+        "name": user["name"],
+        "exp":  datetime.now(timezone.utc) + timedelta(days=JWT_EXP_DAYS),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
+
+
+# ── GET /api/health ───────────────────────────────────────────────
+@app.get("/api/health")
+def api_health():
+    return {"status": "ok"}
+
+
+# ── POST /api/auth/register ───────────────────────────────────────
+class RegisterPayload(BaseModel):
+    username: str
+    name:     str
+    password: str
+
+@app.post("/api/auth/register")
+def register(payload: RegisterPayload):
+    sb       = _sb()
+    username = payload.username.strip().lower()
+    name     = payload.name.strip()
+
+    if not username or not name or not payload.password:
+        raise HTTPException(status_code=400, detail="Username, naam aur password zaroori hai")
+    if len(payload.password) < 6:
+        raise HTTPException(status_code=400, detail="Password kam se kam 6 characters ka hona chahiye")
+
+    existing = sb.table("users").select("id").eq("username", username).execute()
+    if existing.data:
+        raise HTTPException(status_code=409, detail="Ye username pehle se registered hai")
+
+    pw_hash = bcrypt.hashpw(payload.password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    resp = sb.table("users").insert({
+        "username":      username,
+        "name":          name,
+        "password_hash": pw_hash,
+    }).execute()
+
+    user  = resp.data[0]
+    token = _make_token(user)
+    return {"success": True, "token": token, "name": user["name"], "username": user["username"]}
+
+
+# ── POST /api/auth/login ──────────────────────────────────────────
+class LoginPayload(BaseModel):
+    username: str
+    password: str
+
+@app.post("/api/auth/login")
+def login(payload: LoginPayload):
+    sb       = _sb()
+    username = payload.username.strip().lower()
+
+    resp = sb.table("users").select("*").eq("username", username).limit(1).execute()
+    if not resp.data:
+        raise HTTPException(status_code=401, detail="Galat username ya password")
+
+    user = resp.data[0]
+    if not bcrypt.checkpw(payload.password.encode("utf-8"),
+                          user["password_hash"].encode("utf-8")):
+        raise HTTPException(status_code=401, detail="Galat username ya password")
+
+    token = _make_token(user)
+    return {"success": True, "token": token, "name": user["name"], "username": user["username"]}
+
+
+# ── GET /api/auth/me ──────────────────────────────────────────────
+@app.get("/api/auth/me")
+def auth_me(authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Token nahi mila")
+    token = authorization.split(" ", 1)[1]
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Token invalid ya expire ho gaya")
+    return {"username": payload.get("sub"), "name": payload.get("name")}
 
 
 # ── GET /api/products ─────────────────────────────────────────────
