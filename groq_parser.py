@@ -337,7 +337,7 @@ def parse_message(user_text: str, sender_name: str) -> dict:
     )
 
     payload = {
-        "model": "llama-3.3-70b-versatile",
+        "model": "openai/gpt-oss-120b",
         "temperature": 0,
         "max_tokens": 2000,
         "messages": [
